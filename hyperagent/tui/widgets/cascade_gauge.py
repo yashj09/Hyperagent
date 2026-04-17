@@ -22,7 +22,7 @@ class CascadeGauge(Static):
     BAR_WIDTH = 20
 
     def __init__(self, **kwargs):
-        super().__init__("", id="alerts-panel", **kwargs)
+        super().__init__("CASCADE ALERTS\n" + "=" * 40 + "\n\n  Monitoring...", id="alerts-panel", **kwargs)
 
     def update_scores(self, state: AgentState):
         """Rebuild the gauge display from current cascade scores."""

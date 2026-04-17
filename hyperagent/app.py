@@ -24,6 +24,9 @@ from scanner.liquidation_scanner import LiquidationScanner
 from scanner.whale_addresses import get_all_addresses
 from strategies.cascade import CascadeStrategy
 from strategies.momentum import MomentumStrategy
+from strategies.funding_sniper import FundingSniperStrategy
+from strategies.volatility_breakout import VolatilityBreakoutStrategy
+from strategies.orderbook_imbalance import OrderbookImbalanceStrategy
 from strategies.ai_wrapper import AIWrapper
 from tui.screens.dashboard import DashboardScreen
 from tui.screens.strategy_config import StrategyConfigScreen
@@ -59,8 +62,13 @@ class HyperAgentApp(App):
         addresses = get_all_addresses()
         self.scanner = LiquidationScanner(self.client.info, addresses)
 
-        self.cascade_strategy = CascadeStrategy(self.scanner, self.client.info)
-        self.momentum_strategy = MomentumStrategy(self.client.info)
+        self.strategies = {
+            "cascade": CascadeStrategy(self.scanner, self.client.info),
+            "momentum": MomentumStrategy(self.client.info),
+            "funding_sniper": FundingSniperStrategy(self.client.info),
+            "volatility_breakout": VolatilityBreakoutStrategy(self.client.info),
+            "orderbook_imbalance": OrderbookImbalanceStrategy(self.client.info),
+        }
         self.ai_wrapper: AIWrapper | None = None
 
         self._prev_prices: dict = {}
@@ -171,6 +179,25 @@ class HyperAgentApp(App):
                     # Update position prices via risk manager
                     self.risk.update_position_prices(filtered)
 
+                # Fetch OI and funding from meta (needed by cascade strategy)
+                try:
+                    meta = asyncio.run(self.client.get_meta_and_asset_ctxs())
+                    if meta and len(meta) > 1:
+                        universe = meta[0].get("universe", [])
+                        contexts = meta[1] if isinstance(meta[1], list) else []
+                        for i, ctx in enumerate(contexts):
+                            if i < len(universe) and isinstance(ctx, dict):
+                                coin = universe[i].get("name", "")
+                                if coin in config.MONITORED_ASSETS:
+                                    oi = ctx.get("openInterest")
+                                    if oi:
+                                        self.state.open_interest[coin] = float(oi)
+                                    funding = ctx.get("funding")
+                                    if funding:
+                                        self.state.funding_rates[coin] = float(funding)
+                except Exception:
+                    pass
+
                 # Try to fetch account info
                 try:
                     account = asyncio.run(self.client.get_account_info())
@@ -185,7 +212,7 @@ class HyperAgentApp(App):
                         avail = self.state.account_value - self.state.available_margin
                         self.state.available_margin = max(0, avail)
                 except Exception:
-                    pass  # Account info is optional — may not have key
+                    pass
 
             except Exception as exc:
                 self.state.add_log(f"[PRICE] Error: {exc}")
@@ -244,11 +271,9 @@ class HyperAgentApp(App):
 
             try:
                 strategy_name = self.state.active_strategy
-                if strategy_name == "cascade":
-                    strategy = self.cascade_strategy
-                elif strategy_name == "momentum":
-                    strategy = self.momentum_strategy
-                else:
+                strategy = self.strategies.get(strategy_name)
+                if not strategy:
+                    self.state.add_log(f"[STRATEGY] Unknown: {strategy_name}")
                     time.sleep(5)
                     continue
 
@@ -269,7 +294,10 @@ class HyperAgentApp(App):
                     if signal.ai_reasoning:
                         self.state.add_log(f"[AI] {signal.ai_reasoning[:120]}")
 
-                    if self.risk.check_daily_limits():
+                    existing_coins = {p.coin for p in self.state.positions}
+                    if signal.coin in existing_coins:
+                        self.state.add_log(f"[RISK] Already have open {signal.coin} position, skipping")
+                    elif self.risk.check_daily_limits():
                         self._execute_signal(signal)
                     else:
                         self.state.add_log("[RISK] Daily loss limit reached, skipping trade")
@@ -278,7 +306,9 @@ class HyperAgentApp(App):
                 self.state.add_log(f"[STRATEGY] Error: {exc}")
                 logger.exception("Strategy error")
 
-            time.sleep(config.SCAN_INTERVAL_SECONDS)
+            fast_strategies = {"funding_sniper", "volatility_breakout", "orderbook_imbalance"}
+            interval = 5 if self.state.active_strategy in fast_strategies else config.SCAN_INTERVAL_SECONDS
+            time.sleep(interval)
 
     def _execute_signal(self, signal: Signal):
         """Execute a trade based on a signal. Called from strategy worker thread."""

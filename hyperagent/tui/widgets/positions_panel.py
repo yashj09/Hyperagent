@@ -17,7 +17,7 @@ class PositionsPanel(Static):
     """Displays active positions with live PnL and trailing-stop info."""
 
     def __init__(self, **kwargs):
-        super().__init__("", id="positions-panel", **kwargs)
+        super().__init__("POSITIONS\n" + "=" * 45 + "\n\n  No open positions.", id="positions-panel", **kwargs)
         self._flash_active = False
 
     def update_positions(self, state: AgentState):

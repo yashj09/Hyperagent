@@ -1,14 +1,14 @@
 """
-Main dashboard screen (actually a Container placed inside a TabPane).
+Main dashboard screen — a Container placed inside a TabPane.
 
-Grid layout:
+Layout (using Textual containers, no CSS grid):
   Row 1: MarketTicker (full width)
-  Row 2: Heatmap (left) | Cascade Alerts + AI Panel (right)
-  Row 3: Positions (left) | Trade Log (right)
+  Row 2: Heatmap (left) | Cascade Gauge + AI Panel (right)
+  Row 3: Positions (left) | Log (right)
 """
 
-from textual.containers import Container, Vertical
-from textual.widgets import Static
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.widgets import Static, RichLog
 from rich.text import Text
 
 from core.state import AgentState
@@ -19,7 +19,6 @@ from tui.widgets.positions_panel import PositionsPanel
 
 
 class AIPanel(Static):
-    """Displays the latest AI reasoning snippet."""
 
     def __init__(self, **kwargs):
         super().__init__("", id="ai-panel", **kwargs)
@@ -39,13 +38,11 @@ class AIPanel(Static):
         output.append("  Status: ", style="dim")
         output.append("ENABLED\n", style="bold #3fb950")
 
-        # Show latest AI reasoning from signals
         latest_reasoning = None
         for sig in reversed(state.active_signals):
             if sig.ai_reasoning:
                 latest_reasoning = sig.ai_reasoning
                 break
-
         if not latest_reasoning:
             for trade in reversed(state.trade_history):
                 if trade.ai_reasoning:
@@ -54,7 +51,6 @@ class AIPanel(Static):
 
         if latest_reasoning:
             output.append("\n  Latest Analysis:\n", style="dim")
-            # Wrap reasoning text
             words = latest_reasoning.split()
             line = "  "
             for word in words:
@@ -71,98 +67,80 @@ class AIPanel(Static):
         self.update(output)
 
 
-class LogPanel(Static):
-    """Scrolling log of agent events."""
+class LogPanel(RichLog):
 
     def __init__(self, **kwargs):
-        super().__init__("", id="log-panel", **kwargs)
+        super().__init__(id="log-panel", auto_scroll=True, wrap=True, max_lines=500, **kwargs)
+        self._seen_count = 0
 
     def update_log(self, state: AgentState):
-        output = Text()
-        output.append("TRADE LOG\n", style="bold cyan")
-        output.append("=" * 55 + "\n", style="dim")
-
-        if not state.log_lines:
-            output.append(
-                "\n  No log entries yet.\n",
-                style="dim italic",
-            )
-            self.update(output)
-            return
-
-        # Show the last N lines that fit
         lines = list(state.log_lines)
-        display_lines = lines[-25:]  # show last 25 lines
+        new_lines = lines[self._seen_count:]
+        self._seen_count = len(lines)
 
-        for line in display_lines:
-            # Color-code log lines by content
+        for line in new_lines:
+            styled = Text()
             if "[STOP-LOSS" in line or "ERROR" in line:
-                output.append(f"  {line}\n", style="#f85149")
+                styled.append(line, style="#f85149")
             elif "[RISK]" in line:
-                output.append(f"  {line}\n", style="#d29922")
+                styled.append(line, style="#d29922")
             elif "[SIGNAL]" in line or "[TRADE]" in line:
-                output.append(f"  {line}\n", style="#3fb950")
+                styled.append(line, style="#3fb950")
             elif "[AI]" in line:
-                output.append(f"  {line}\n", style="#a371f7")
+                styled.append(line, style="#a371f7")
             elif "[SCAN]" in line:
-                output.append(f"  {line}\n", style="#58a6ff")
+                styled.append(line, style="#58a6ff")
             else:
-                output.append(f"  {line}\n", style="dim")
-
-        self.update(output)
+                styled.append(line, style="dim")
+            self.write(styled)
 
 
 class DashboardScreen(Container):
-    """
-    The main dashboard container with a grid layout holding
-    all monitoring widgets.
-    """
 
     def __init__(self, state: AgentState, **kwargs):
         super().__init__(id="dashboard-container", **kwargs)
         self.state = state
 
     def compose(self):
-        # Row 1: full-width market ticker
         yield MarketTicker()
-
-        # Row 2 left: heatmap
-        yield LiquidationHeatmap()
-
-        # Row 2 right: cascade alerts + AI panel stacked vertically
-        with Vertical(id="right-top-container"):
-            yield CascadeGauge()
-            yield AIPanel()
-
-        # Row 3 left: positions
-        yield PositionsPanel()
-
-        # Row 3 right: log
-        yield LogPanel()
+        with Horizontal(id="dashboard-row2"):
+            yield LiquidationHeatmap()
+            with Vertical(id="right-top-container"):
+                yield CascadeGauge()
+                yield AIPanel()
+        with Horizontal(id="dashboard-row3"):
+            yield PositionsPanel()
+            yield LogPanel()
 
     def refresh_data(self, state: AgentState):
-        """Update all child widgets with fresh state data."""
         self.state = state
-
-        ticker = self.query_one(MarketTicker)
-        ticker.update_prices(state.prices)
-
-        heatmap = self.query_one(LiquidationHeatmap)
-        heatmap.update_clusters(state)
-
-        gauge = self.query_one(CascadeGauge)
-        gauge.update_scores(state)
-
-        positions = self.query_one(PositionsPanel)
-        positions.update_positions(state)
-
-        ai_panel = self.query_one(AIPanel)
-        ai_panel.update_ai(state)
-
-        log_panel = self.query_one(LogPanel)
-        log_panel.update_log(state)
+        try:
+            self.query_one(MarketTicker).update_prices(state.prices)
+        except Exception:
+            pass
+        try:
+            self.query_one(LiquidationHeatmap).update_clusters(state)
+        except Exception:
+            pass
+        try:
+            self.query_one(CascadeGauge).update_scores(state)
+        except Exception:
+            pass
+        try:
+            self.query_one(PositionsPanel).update_positions(state)
+        except Exception:
+            pass
+        try:
+            self.query_one(AIPanel).update_ai(state)
+        except Exception:
+            pass
+        try:
+            self.query_one(LogPanel).update_log(state)
+        except Exception:
+            pass
 
     def flash_stop_loss(self):
-        """Trigger the stop-loss flash on the positions panel."""
-        positions = self.query_one(PositionsPanel)
-        positions.trigger_stop_loss_flash()
+        try:
+            self.query_one(PositionsPanel).trigger_stop_loss_flash()
+        except Exception:
+            pass

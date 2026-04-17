@@ -15,7 +15,7 @@ class MarketTicker(Static):
     """Horizontal bar showing live prices: BTC $84,532 (+0.3%) | ETH ..."""
 
     def __init__(self, **kwargs):
-        super().__init__("", id="market-panel", **kwargs)
+        super().__init__(" MARKETS  Connecting...", id="market-panel", **kwargs)
         self._prices: dict = {}
         self._prev_prices: dict = {}
 

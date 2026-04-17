@@ -17,7 +17,7 @@ class LiquidationHeatmap(Static):
     MAX_BAR_WIDTH = 16
 
     def __init__(self, **kwargs):
-        super().__init__("", id="heatmap-panel", **kwargs)
+        super().__init__("LIQUIDATION HEATMAP\n" + "=" * 45 + "\n\n  Waiting for scanner...", id="heatmap-panel", **kwargs)
 
     def update_clusters(self, state: AgentState):
         """Rebuild the heatmap from current state data."""
@@ -26,11 +26,40 @@ class LiquidationHeatmap(Static):
         output.append("=" * 60 + "\n", style="dim")
 
         clusters = state.clusters
-        if not clusters:
+        raw_levels = state.liquidation_levels
+
+        if not clusters and not raw_levels:
             output.append(
                 "\n  No liquidation data yet. Scanner running...\n",
                 style="dim italic",
             )
+            output.append(
+                f"  Addresses scanned: {state.addresses_scanned}\n",
+                style="dim",
+            )
+            self.update(output)
+            return
+
+        if not clusters and raw_levels:
+            total = sum(len(v) for v in raw_levels.values())
+            output.append(f"\n  Raw levels found: {total}\n", style="dim")
+            output.append(f"  (below cluster threshold)\n\n", style="dim italic")
+            for coin, levels in sorted(raw_levels.items()):
+                if not levels:
+                    continue
+                price = state.prices.get(coin, 0)
+                price_str = f"${price:,.0f}" if price >= 1000 else f"${price:,.2f}"
+                output.append(f"  {coin}", style="bold white")
+                output.append(f"  (price: {price_str})\n", style="dim")
+                for lvl in levels[:8]:
+                    side_color = "#3fb950" if lvl.side == "long" else "#f85149"
+                    liq_str = f"${lvl.price:,.0f}" if lvl.price >= 1000 else f"${lvl.price:,.2f}"
+                    output.append(f"    {lvl.side.upper():<6}", style=side_color)
+                    output.append(f" liq @ {liq_str:<12}", style="white")
+                    output.append(f" {lvl.leverage:.0f}x", style="dim")
+                    if lvl.notional_usd > 0:
+                        output.append(f"  ${lvl.notional_usd:,.0f}", style="dim")
+                    output.append("\n")
             self.update(output)
             return
 

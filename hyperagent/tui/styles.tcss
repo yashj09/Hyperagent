@@ -1,4 +1,4 @@
-/* HyperAgent TUI Stylesheet — Dark trading terminal theme */
+/* HyperAgent TUI Stylesheet */
 
 Screen {
     background: #0d1117;
@@ -16,19 +16,20 @@ Footer {
     color: #8b949e;
 }
 
-/* ---------- Tab styling ---------- */
-
 TabbedContent {
     background: #0d1117;
+    height: 1fr;
+}
+
+ContentSwitcher {
+    background: #0d1117;
+    height: 1fr;
 }
 
 TabPane {
     background: #0d1117;
     padding: 0;
-}
-
-ContentSwitcher {
-    background: #0d1117;
+    height: 1fr;
 }
 
 Tabs {
@@ -48,14 +49,11 @@ Tab.-active {
     text-style: bold;
 }
 
-/* ---------- Panel IDs ---------- */
+/* ===== Dashboard Layout ===== */
 
-#header-panel {
-    background: #161b22;
-    color: #58a6ff;
-    height: 3;
+#dashboard-container {
+    height: 100%;
     padding: 0 1;
-    border-bottom: solid #30363d;
 }
 
 #market-panel {
@@ -63,17 +61,44 @@ Tab.-active {
     border: solid #30363d;
     height: 3;
     padding: 0 1;
-    margin: 0 0 1 0;
+    margin-bottom: 1;
+    dock: top;
+}
+
+#dashboard-row2 {
+    height: 50%;
+    margin-bottom: 1;
+}
+
+#dashboard-row3 {
+    height: 50%;
 }
 
 #heatmap-panel {
     background: #0d1117;
     border: solid #30363d;
     padding: 1;
+    width: 1fr;
+    height: 100%;
+    margin-right: 1;
+    overflow-y: auto;
+}
+
+#right-top-container {
+    width: 1fr;
     height: 100%;
 }
 
 #alerts-panel {
+    background: #0d1117;
+    border: solid #30363d;
+    padding: 1;
+    height: 1fr;
+    margin-bottom: 1;
+    overflow-y: auto;
+}
+
+#ai-panel {
     background: #0d1117;
     border: solid #30363d;
     padding: 1;
@@ -85,25 +110,22 @@ Tab.-active {
     background: #0d1117;
     border: solid #30363d;
     padding: 1;
+    width: 1fr;
     height: 100%;
+    margin-right: 1;
+    overflow-y: auto;
 }
 
 #log-panel {
     background: #0d1117;
     border: solid #30363d;
     padding: 1;
+    width: 1fr;
     height: 100%;
+    overflow-y: auto;
 }
 
-#ai-panel {
-    background: #0d1117;
-    border: solid #30363d;
-    padding: 1;
-    height: auto;
-    max-height: 10;
-}
-
-/* ---------- Score classes ---------- */
+/* ===== Score Classes ===== */
 
 .high-score {
     color: #f85149;
@@ -119,7 +141,7 @@ Tab.-active {
     color: #8b949e;
 }
 
-/* ---------- Stop-loss flash ---------- */
+/* ===== Stop-Loss Flash ===== */
 
 .stop-loss-flash {
     background: #5c1010;
@@ -127,34 +149,9 @@ Tab.-active {
     text-style: bold;
 }
 
-/* ---------- Dashboard layout ---------- */
-
-#dashboard-container {
-    layout: grid;
-    grid-size: 2 3;
-    grid-rows: 3 1fr 1fr;
-    grid-columns: 1fr 1fr;
-    grid-gutter: 1;
-    padding: 0 1;
-    height: 100%;
-}
-
-#market-ticker-row {
-    column-span: 2;
-    height: 3;
-}
-
-/* ---------- Right column sub-layout ---------- */
-
-#right-top-container {
-    layout: vertical;
-    height: 100%;
-}
-
-/* ---------- Strategy Config Screen ---------- */
+/* ===== Strategy Config Screen ===== */
 
 #strategy-container {
-    layout: vertical;
     padding: 1 2;
     height: 100%;
 }
@@ -169,7 +166,6 @@ Tab.-active {
 }
 
 #strategy-controls {
-    layout: horizontal;
     height: 5;
     margin-bottom: 1;
 }
@@ -220,10 +216,9 @@ Tab.-active {
     border: solid #30363d;
 }
 
-/* ---------- Journal Screen ---------- */
+/* ===== Journal Screen ===== */
 
 #journal-container {
-    layout: vertical;
     padding: 1 2;
     height: 100%;
 }
@@ -250,21 +245,13 @@ Tab.-active {
     margin-top: 1;
 }
 
-/* ---------- Positive / Negative colors ---------- */
+/* ===== Colors ===== */
 
-.positive {
-    color: #3fb950;
-}
+.positive { color: #3fb950; }
+.negative { color: #f85149; }
+.neutral  { color: #8b949e; }
 
-.negative {
-    color: #f85149;
-}
-
-.neutral {
-    color: #8b949e;
-}
-
-/* ---------- DataTable styling ---------- */
+/* ===== DataTable ===== */
 
 DataTable {
     background: #0d1117;
@@ -282,7 +269,7 @@ DataTable > .datatable--cursor {
     color: #c9d1d9;
 }
 
-/* ---------- Select / Switch / Button ---------- */
+/* ===== Widgets ===== */
 
 Select {
     background: #161b22;

@@ -207,19 +207,48 @@ class HyperLiquidClient:
 
             status = result.get("status", "")
             if status == "ok":
-                statuses = result.get("response", {}).get(
-                    "data", {}
-                ).get("statuses", [{}])
-                filled = statuses[0] if statuses else {}
-                oid = str(filled.get("resting", {}).get("oid", ""))
-                return TradeResult(
-                    success=True,
-                    order_id=oid or None,
-                    executed_price=limit_px,
-                    executed_size=sz,
-                    error_message=None,
-                    timestamp=time.time(),
+                statuses = (
+                    result.get("response", {})
+                    .get("data", {})
+                    .get("statuses", [])
                 )
+                first = statuses[0] if statuses else {}
+
+                if "error" in first:
+                    return TradeResult(
+                        success=False, order_id=None,
+                        executed_price=0.0, executed_size=0.0,
+                        error_message=first["error"],
+                        timestamp=time.time(),
+                    )
+
+                if "filled" in first:
+                    f = first["filled"]
+                    return TradeResult(
+                        success=True,
+                        order_id=str(f.get("oid", "")),
+                        executed_price=float(f.get("avgPx", limit_px)),
+                        executed_size=float(f.get("totalSz", sz)),
+                        error_message=None,
+                        timestamp=time.time(),
+                    )
+
+                if "resting" in first:
+                    return TradeResult(
+                        success=True,
+                        order_id=str(first["resting"].get("oid", "")),
+                        executed_price=limit_px,
+                        executed_size=sz,
+                        error_message="Order resting (not yet filled)",
+                        timestamp=time.time(),
+                    )
+
+                return TradeResult(
+                    success=True, order_id=None,
+                    executed_price=limit_px, executed_size=sz,
+                    error_message=None, timestamp=time.time(),
+                )
+
             return TradeResult(
                 success=False, order_id=None, executed_price=0.0,
                 executed_size=0.0,
@@ -311,12 +340,42 @@ class HyperLiquidClient:
                 timestamp=time.time(),
             )
 
-        close_side = "sell" if szi > 0 else "buy"
         abs_size = abs(szi)
 
-        return await self.place_market_order(
-            coin, close_side, abs_size, reduce_only=True
-        )
+        try:
+            result = await asyncio.to_thread(
+                self.exchange.market_close, coin, sz=abs_size
+            )
+            status = result.get("status", "")
+            if status == "ok":
+                statuses = (
+                    result.get("response", {})
+                    .get("data", {})
+                    .get("statuses", [])
+                )
+                first = statuses[0] if statuses else {}
+                if "filled" in first:
+                    f = first["filled"]
+                    return TradeResult(
+                        success=True,
+                        order_id=str(f.get("oid", "")),
+                        executed_price=float(f.get("avgPx", 0)),
+                        executed_size=float(f.get("totalSz", abs_size)),
+                        error_message=None,
+                        timestamp=time.time(),
+                    )
+            return TradeResult(
+                success=True, order_id=None,
+                executed_price=0.0, executed_size=abs_size,
+                error_message=None, timestamp=time.time(),
+            )
+        except Exception as exc:
+            logger.exception("close_position failed for %s", coin)
+            return TradeResult(
+                success=False, order_id=None, executed_price=0.0,
+                executed_size=0.0, error_message=str(exc),
+                timestamp=time.time(),
+            )
 
     async def cancel_all_orders(self, coin: str) -> bool:
         """Cancel every open order for *coin*. Returns True on success."""

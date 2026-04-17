@@ -21,16 +21,32 @@ STRATEGY_DESCRIPTIONS = {
         "Liquidation Cascade Strategy\n"
         "Scans for dense clusters of liquidation levels near the current price. "
         "When the cascade score exceeds the threshold, the agent opens a position "
-        "in the direction of the expected cascade (short when longs are about to "
-        "be liquidated, long when shorts are clustered). Uses trailing stops to "
+        "in the direction of the expected cascade. Uses trailing stops to "
         "ride the momentum of cascading liquidations."
     ),
     "momentum": (
         "Momentum Flip Strategy\n"
         "Multi-indicator momentum strategy using RSI, MACD, EMA crossovers, "
         "and Bollinger Bands. A voting system determines signal strength: "
-        "when enough indicators agree on direction, the agent enters. "
-        "Designed for trending markets with clear directional bias."
+        "when enough indicators agree on direction, the agent enters."
+    ),
+    "funding_sniper": (
+        "Funding Rate Sniper\n"
+        "Collects funding payments by trading against overcrowded positions. "
+        "When longs are paying extreme funding, goes SHORT to receive payments. "
+        "Near risk-free carry trade with mathematically guaranteed income per period."
+    ),
+    "volatility_breakout": (
+        "Volatility Breakout\n"
+        "Detects sudden price spikes on 5-minute candles and enters in the "
+        "breakout direction to ride momentum. Uses tight trailing stop to "
+        "catch the reversal. Most active in volatile markets."
+    ),
+    "orderbook_imbalance": (
+        "Orderbook Imbalance\n"
+        "Reads L2 orderbook depth in real-time. When buy-side volume is 2x+ "
+        "sell-side, goes LONG (and vice versa). Order flow imbalance predicts "
+        "short-term price direction."
     ),
 }
 
@@ -66,6 +82,39 @@ MOMENTUM_PARAMS = [
     ("Trailing Stop %", f"{config.TRAILING_STOP_PCT * 100:.1f}%"),
     ("Take Profit %", f"{config.TAKE_PROFIT_PCT * 100:.1f}%"),
 ]
+
+FUNDING_PARAMS = [
+    ("Funding Threshold", "0.01% per 8h"),
+    ("High Threshold", "0.03% per 8h"),
+    ("Position Size USD", f"${config.POSITION_SIZE_USD}"),
+    ("Trailing Stop %", f"{config.TRAILING_STOP_PCT * 100:.1f}%"),
+    ("Take Profit %", f"{config.TAKE_PROFIT_PCT * 100:.1f}%"),
+]
+
+VOLATILITY_PARAMS = [
+    ("Breakout Threshold", "0.3%"),
+    ("Strong Breakout", "0.6%"),
+    ("Candle Interval", "5m"),
+    ("Lookback Candles", "20"),
+    ("Position Size USD", f"${config.POSITION_SIZE_USD}"),
+    ("Trailing Stop %", f"{config.TRAILING_STOP_PCT * 100:.1f}%"),
+]
+
+ORDERBOOK_PARAMS = [
+    ("Imbalance Threshold", "1.8x"),
+    ("Strong Imbalance", "2.5x"),
+    ("Depth Levels", "10"),
+    ("Position Size USD", f"${config.POSITION_SIZE_USD}"),
+    ("Trailing Stop %", f"{config.TRAILING_STOP_PCT * 100:.1f}%"),
+]
+
+STRATEGY_PARAMS = {
+    "cascade": CASCADE_PARAMS,
+    "momentum": MOMENTUM_PARAMS,
+    "funding_sniper": FUNDING_PARAMS,
+    "volatility_breakout": VOLATILITY_PARAMS,
+    "orderbook_imbalance": ORDERBOOK_PARAMS,
+}
 
 
 class StrategyConfigScreen(Container):
@@ -103,6 +152,9 @@ class StrategyConfigScreen(Container):
                     [
                         ("Liquidation Cascade", "cascade"),
                         ("Momentum Flip", "momentum"),
+                        ("Funding Sniper", "funding_sniper"),
+                        ("Volatility Breakout", "volatility_breakout"),
+                        ("Orderbook Imbalance", "orderbook_imbalance"),
                     ],
                     value=self.state.active_strategy,
                     id="strategy-select",
@@ -141,7 +193,7 @@ class StrategyConfigScreen(Container):
         table = self.query_one("#strategy-params-table", DataTable)
         table.clear()
 
-        params = CASCADE_PARAMS if strategy == "cascade" else MOMENTUM_PARAMS
+        params = STRATEGY_PARAMS.get(strategy, CASCADE_PARAMS)
         for name, value in params:
             table.add_row(name, value)
 
@@ -168,25 +220,21 @@ class StrategyConfigScreen(Container):
 
     def on_button_pressed(self, event: Button.Pressed):
         """Handle Start/Stop button."""
-        if event.button.id in ("strategy-start-btn", "strategy-stop-btn"):
+        if event.button.id == "strategy-start-btn":
             btn = event.button
             if self.state.is_running:
-                # Stop
                 self.state.is_running = False
                 self.state.status_message = "Stopped"
                 self.state.add_log("[STRATEGY] Stopped by user")
                 btn.label = "Start Strategy"
-                btn.id = "strategy-start-btn"
                 btn.variant = "success"
             else:
-                # Start
                 self.state.is_running = True
                 self.state.status_message = "Running"
                 self.state.add_log(
                     f"[STRATEGY] Started: {self.state.active_strategy}"
                 )
                 btn.label = "Stop Strategy"
-                btn.id = "strategy-stop-btn"
                 btn.variant = "error"
 
             self.post_message(self.StrategyToggled(self.state.is_running))
