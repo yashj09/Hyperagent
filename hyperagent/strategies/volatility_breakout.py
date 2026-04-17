@@ -17,8 +17,8 @@ from strategies.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
-BREAKOUT_PCT = 0.003
-STRONG_BREAKOUT_PCT = 0.006
+BREAKOUT_PCT = 0.001
+STRONG_BREAKOUT_PCT = 0.003
 CANDLE_INTERVAL = "5m"
 LOOKBACK_CANDLES = 20
 

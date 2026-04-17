@@ -16,8 +16,8 @@ from strategies.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
-IMBALANCE_THRESHOLD = 1.8
-STRONG_IMBALANCE = 2.5
+IMBALANCE_THRESHOLD = 1.3
+STRONG_IMBALANCE = 1.8
 DEPTH_LEVELS = 10
 
 

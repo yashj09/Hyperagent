@@ -260,21 +260,20 @@ class HyperAgentApp(App):
 
     @work(exclusive=True, thread=True, group="strategy")
     def run_strategy(self):
-        """Run the active strategy to check for signals and execute trades."""
+        """Run the active strategy — fast loop, instant execution."""
         self.state.add_log("[STRATEGY] Strategy worker started")
-        time.sleep(8)
+        time.sleep(3)
 
         while True:
             if not self.state.is_running:
-                time.sleep(5)
+                time.sleep(1)
                 continue
 
             try:
                 strategy_name = self.state.active_strategy
                 strategy = self.strategies.get(strategy_name)
                 if not strategy:
-                    self.state.add_log(f"[STRATEGY] Unknown: {strategy_name}")
-                    time.sleep(5)
+                    time.sleep(1)
                     continue
 
                 if self.state.ai_enabled:
@@ -296,19 +295,17 @@ class HyperAgentApp(App):
 
                     existing_coins = {p.coin for p in self.state.positions}
                     if signal.coin in existing_coins:
-                        self.state.add_log(f"[RISK] Already have open {signal.coin} position, skipping")
+                        pass
                     elif self.risk.check_daily_limits():
                         self._execute_signal(signal)
                     else:
-                        self.state.add_log("[RISK] Daily loss limit reached, skipping trade")
+                        self.state.add_log("[RISK] Daily loss limit reached")
 
             except Exception as exc:
                 self.state.add_log(f"[STRATEGY] Error: {exc}")
                 logger.exception("Strategy error")
 
-            fast_strategies = {"funding_sniper", "volatility_breakout", "orderbook_imbalance"}
-            interval = 5 if self.state.active_strategy in fast_strategies else config.SCAN_INTERVAL_SECONDS
-            time.sleep(interval)
+            time.sleep(1)
 
     def _execute_signal(self, signal: Signal):
         """Execute a trade based on a signal. Called from strategy worker thread."""

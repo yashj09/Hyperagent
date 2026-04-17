@@ -16,8 +16,8 @@ from strategies.base import BaseStrategy
 
 logger = logging.getLogger(__name__)
 
-FUNDING_THRESHOLD = 0.0001
-FUNDING_HIGH_THRESHOLD = 0.0003
+FUNDING_THRESHOLD = 0.00005
+FUNDING_HIGH_THRESHOLD = 0.0001
 
 
 class FundingSniperStrategy(BaseStrategy):
