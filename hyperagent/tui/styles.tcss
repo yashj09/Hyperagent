@@ -74,14 +74,16 @@ Tab.-active {
     height: 50%;
 }
 
-#heatmap-panel {
-    background: #0d1117;
-    border: solid #30363d;
-    padding: 1;
+#heatmap-scroll {
     width: 1fr;
     height: 100%;
     margin-right: 1;
-    overflow-y: auto;
+    border: solid #30363d;
+    background: #0d1117;
+}
+
+#heatmap-panel {
+    padding: 1;
 }
 
 #right-top-container {
@@ -106,14 +108,16 @@ Tab.-active {
     max-height: 12;
 }
 
-#positions-panel {
-    background: #0d1117;
-    border: solid #30363d;
-    padding: 1;
+#positions-scroll {
     width: 1fr;
     height: 100%;
     margin-right: 1;
-    overflow-y: auto;
+    border: solid #30363d;
+    background: #0d1117;
+}
+
+#positions-panel {
+    padding: 1;
 }
 
 #log-panel {

@@ -104,12 +104,14 @@ class DashboardScreen(Container):
     def compose(self):
         yield MarketTicker()
         with Horizontal(id="dashboard-row2"):
-            yield LiquidationHeatmap()
+            with VerticalScroll(id="heatmap-scroll"):
+                yield LiquidationHeatmap()
             with Vertical(id="right-top-container"):
                 yield CascadeGauge()
                 yield AIPanel()
         with Horizontal(id="dashboard-row3"):
-            yield PositionsPanel()
+            with VerticalScroll(id="positions-scroll"):
+                yield PositionsPanel()
             yield LogPanel()
 
     def refresh_data(self, state: AgentState):

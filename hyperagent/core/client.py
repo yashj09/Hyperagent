@@ -48,7 +48,12 @@ class HyperLiquidClient:
 
     def __init__(self, private_key: str = "", testnet: bool = True):
         # ----- Mainnet Info (read-only, public) -----
+        import requests
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
+        session.mount("https://", adapter)
         self.info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
+        self.info.session = session
 
         # ----- Testnet Exchange (trading) -----
         self.exchange: Optional[Exchange] = None

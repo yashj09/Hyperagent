@@ -1,7 +1,8 @@
 """
 Trade journal screen.
 
-Displays a DataTable of completed trades with summary statistics at the bottom.
+Shows both active (open) trades and completed (closed) trades
+with summary statistics at the bottom.
 """
 
 import time as _time
@@ -14,12 +15,12 @@ from core.state import AgentState
 
 
 class TradeJournalScreen(Container):
-    """Trade history table with summary stats."""
 
     def __init__(self, state: AgentState, **kwargs):
         super().__init__(id="journal-container", **kwargs)
         self.state = state
-        self._row_count = 0
+        self._last_open_count = 0
+        self._last_closed_count = 0
 
     def compose(self):
         yield Static("TRADE JOURNAL", id="journal-header")
@@ -27,118 +28,126 @@ class TradeJournalScreen(Container):
         yield Static("", id="journal-summary")
 
     def on_mount(self):
-        """Set up table columns."""
         table = self.query_one("#journal-table", DataTable)
         table.add_columns(
-            "Time",
-            "Strategy",
-            "Asset",
-            "Side",
-            "Entry",
-            "Exit",
-            "PnL",
-            "AI Reasoning",
+            "Status", "Time", "Strategy", "Asset", "Side",
+            "Entry", "Exit/Current", "PnL", "AI Reasoning",
         )
-        # Populate with existing history
-        self._full_refresh()
 
-    def _full_refresh(self):
-        """Rebuild the entire table from state."""
-        table = self.query_one("#journal-table", DataTable)
-        table.clear()
-        self._row_count = 0
+    def refresh_journal(self, state: AgentState):
+        self.state = state
 
-        for trade in self.state.trade_history:
-            self._add_trade_row(table, trade)
+        open_count = len(state.positions)
+        closed_count = len(state.trade_history)
+
+        if open_count != self._last_open_count or closed_count != self._last_closed_count:
+            self._rebuild_table()
+            self._last_open_count = open_count
+            self._last_closed_count = closed_count
 
         self._update_summary()
 
-    def _add_trade_row(self, table: DataTable, trade):
-        """Add a single trade record as a table row."""
-        # Format time
-        time_str = _time.strftime(
-            "%H:%M:%S", _time.localtime(trade.exit_time)
-        )
+    def _rebuild_table(self):
+        table = self.query_one("#journal-table", DataTable)
+        table.clear()
 
-        # Format strategy
-        strategy_str = trade.strategy.capitalize()
+        for pos in self.state.positions:
+            time_str = _time.strftime("%H:%M:%S", _time.localtime(pos.entry_time))
 
-        # Format side
-        side_str = trade.side.upper()
+            if pos.entry_price >= 10_000:
+                entry_str = f"${pos.entry_price:,.0f}"
+                current_str = f"${pos.current_price:,.0f}"
+            elif pos.entry_price >= 100:
+                entry_str = f"${pos.entry_price:,.2f}"
+                current_str = f"${pos.current_price:,.2f}"
+            else:
+                entry_str = f"${pos.entry_price:,.4f}"
+                current_str = f"${pos.current_price:,.4f}"
 
-        # Format prices
-        if trade.entry_price >= 10_000:
-            entry_str = f"${trade.entry_price:,.0f}"
-            exit_str = f"${trade.exit_price:,.0f}"
-        elif trade.entry_price >= 100:
-            entry_str = f"${trade.entry_price:,.2f}"
-            exit_str = f"${trade.exit_price:,.2f}"
-        else:
-            entry_str = f"${trade.entry_price:,.4f}"
-            exit_str = f"${trade.exit_price:,.4f}"
+            pnl = pos.unrealized_pnl
+            pnl_str = f"+${pnl:.2f}" if pnl >= 0 else f"-${abs(pnl):.2f}"
 
-        # Format PnL with sign
-        if trade.pnl >= 0:
-            pnl_str = f"+${trade.pnl:.2f}"
-        else:
-            pnl_str = f"-${abs(trade.pnl):.2f}"
+            reasoning = ""
+            if pos.signal and pos.signal.ai_reasoning:
+                reasoning = pos.signal.ai_reasoning[:40] + "..." if len(pos.signal.ai_reasoning) > 40 else pos.signal.ai_reasoning
+            elif pos.signal:
+                reasoning = pos.signal.reason[:40] + "..." if len(pos.signal.reason) > 40 else pos.signal.reason
 
-        # AI reasoning (truncated)
-        reasoning = trade.ai_reasoning or "-"
-        if len(reasoning) > 40:
-            reasoning = reasoning[:37] + "..."
+            table.add_row(
+                "OPEN",
+                time_str,
+                pos.signal.strategy if pos.signal else "?",
+                pos.coin,
+                pos.side.upper(),
+                entry_str,
+                current_str,
+                pnl_str,
+                reasoning or "-",
+            )
 
-        table.add_row(
-            time_str,
-            strategy_str,
-            trade.coin,
-            side_str,
-            entry_str,
-            exit_str,
-            pnl_str,
-            reasoning,
-        )
-        self._row_count += 1
+        for trade in reversed(self.state.trade_history):
+            time_str = _time.strftime("%H:%M:%S", _time.localtime(trade.exit_time))
+
+            if trade.entry_price >= 10_000:
+                entry_str = f"${trade.entry_price:,.0f}"
+                exit_str = f"${trade.exit_price:,.0f}"
+            elif trade.entry_price >= 100:
+                entry_str = f"${trade.entry_price:,.2f}"
+                exit_str = f"${trade.exit_price:,.2f}"
+            else:
+                entry_str = f"${trade.entry_price:,.4f}"
+                exit_str = f"${trade.exit_price:,.4f}"
+
+            pnl_str = f"+${trade.pnl:.2f}" if trade.pnl >= 0 else f"-${abs(trade.pnl):.2f}"
+
+            reasoning = trade.ai_reasoning or trade.signal.reason if trade.signal else "-"
+            if len(reasoning) > 40:
+                reasoning = reasoning[:37] + "..."
+
+            table.add_row(
+                "CLOSED",
+                time_str,
+                trade.strategy,
+                trade.coin,
+                trade.side.upper(),
+                entry_str,
+                exit_str,
+                pnl_str,
+                reasoning or "-",
+            )
 
     def _update_summary(self):
-        """Compute and display summary statistics."""
         summary = self.query_one("#journal-summary", Static)
         output = Text()
 
-        total = self.state.total_trades
+        open_count = len(self.state.positions)
+        closed_count = self.state.total_trades
         wins = self.state.winning_trades
         win_rate = self.state.win_rate
         total_pnl = self.state.daily_pnl
 
-        output.append("  Total Trades: ", style="dim")
-        output.append(f"{total}", style="bold white")
+        unrealized = sum(p.unrealized_pnl for p in self.state.positions)
+
+        output.append("  Open: ", style="dim")
+        output.append(f"{open_count}", style="bold #58a6ff")
+        output.append("  |  Closed: ", style="dim")
+        output.append(f"{closed_count}", style="bold white")
         output.append("  |  Wins: ", style="dim")
         output.append(f"{wins}", style="bold #3fb950")
         output.append("  |  Win Rate: ", style="dim")
-
-        if win_rate >= 50:
-            output.append(f"{win_rate:.1f}%", style="bold #3fb950")
-        else:
-            output.append(f"{win_rate:.1f}%", style="bold #f85149")
-
-        output.append("  |  Total PnL: ", style="dim")
-        if total_pnl >= 0:
-            output.append(f"+${total_pnl:.2f}", style="bold #3fb950")
-        else:
-            output.append(f"-${abs(total_pnl):.2f}", style="bold #f85149")
+        output.append(
+            f"{win_rate:.0f}%",
+            style="bold #3fb950" if win_rate >= 50 else "bold #f85149"
+        )
+        output.append("  |  Realized: ", style="dim")
+        output.append(
+            f"${total_pnl:+.2f}",
+            style="bold #3fb950" if total_pnl >= 0 else "bold #f85149"
+        )
+        output.append("  |  Unrealized: ", style="dim")
+        output.append(
+            f"${unrealized:+.2f}",
+            style="bold #3fb950" if unrealized >= 0 else "bold #f85149"
+        )
 
         summary.update(output)
-
-    def refresh_journal(self, state: AgentState):
-        """
-        Incrementally update the journal — add new rows and refresh summary.
-        """
-        self.state = state
-        table = self.query_one("#journal-table", DataTable)
-
-        # Add any new trades that appeared since last refresh
-        new_trades = self.state.trade_history[self._row_count:]
-        for trade in new_trades:
-            self._add_trade_row(table, trade)
-
-        self._update_summary()
