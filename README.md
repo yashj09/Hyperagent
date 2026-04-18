@@ -5,6 +5,7 @@
 An interactive Textual-based TUI that provides strategy-selectable autonomous trading on Hyperliquid testnet. Features a Liquidation Cascade Predictor as its star strategy, with a 6-signal Momentum Flip as a second option, and an optional AI reasoning layer powered by Claude Haiku via AWS Bedrock.
 
 ---
+<img width="1319" height="816" alt="Screenshot 2026-04-17 at 4 46 19 PM" src="https://github.com/user-attachments/assets/eb469e12-364b-43e8-a364-32d5dc9e0f5e" />
 
 ## Architecture
 
