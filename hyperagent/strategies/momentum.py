@@ -1,16 +1,19 @@
 """
-Momentum Flip strategy — 6-signal voting system.
+Enhanced Momentum strategy — weighted 6-signal scoring system.
 
-Inspired by Blazefit/hyperliquid-strategy. Uses technical indicators
-to vote on direction. A 4/6 (configurable) majority triggers a signal.
+Replaces the old equal-weight voting with research-calibrated weighted
+scoring, ADX gate, multi-timeframe confirmation, and momentum-oriented
+indicator logic (not reversal).
 
-Signals:
-  1. RSI(8) — oversold = bullish, overbought = bearish
-  2. MACD(14, 23, 9) — histogram crossover
-  3. EMA crossover (7 vs 26)
-  4. Bollinger Bands(20, 2) — price outside bands
-  5. 6h momentum (simple returns)
-  6. 12h momentum (simple returns)
+Signals (100 total):
+  RSI(8) momentum (40/60 thresholds): 20 pts
+  MACD(14,23,9) + histogram slope:    20 pts
+  EMA crossover (7 vs 26):            15 pts
+  Bollinger %B direction:             15 pts
+  Volume-weighted 12h momentum:       15 pts
+  4h EMA trend confirmation:          15 pts
+
+Gate: ADX(14) > 20 required (no signals in choppy markets).
 """
 
 import asyncio
@@ -30,184 +33,226 @@ logger = logging.getLogger(__name__)
 
 
 class MomentumStrategy(BaseStrategy):
-    """6-signal voting system for momentum-based entries."""
 
-    def __init__(self, mainnet_info: Info):
+    def __init__(self, mainnet_info: Info, candle_cache=None):
         self.info = mainnet_info
+        self.candle_cache = candle_cache
 
     @property
     def name(self) -> str:
-        return "Momentum Flip"
+        return "Momentum"
 
     @property
     def description(self) -> str:
-        return "6-signal voting system: RSI, MACD, EMA, Bollinger Bands, 6h/12h momentum"
+        return (
+            "Weighted 6-signal scoring: RSI, MACD+slope, EMA crossover, "
+            "BB %B, volume-momentum, 4h confirmation. ADX gate filters "
+            "choppy markets. Score >= 60 to trigger."
+        )
 
     async def generate_signal(self, state: AgentState) -> Optional[Signal]:
-        """Evaluate each monitored asset and return highest-conviction signal."""
         best_signal: Optional[Signal] = None
-        best_vote_count: int = 0
+        best_score: float = 0
 
         for coin in config.MONITORED_ASSETS:
-            current_price = state.prices.get(coin)
-            if not current_price:
+            price = state.prices.get(coin)
+            if not price:
                 continue
 
-            candles = await self._fetch_candles(coin)
+            candles = await self._fetch_candles(
+                coin, config.MOMENTUM_CANDLE_INTERVAL, config.MOMENTUM_CANDLE_COUNT
+            )
             if not candles or len(candles) < 30:
                 continue
 
-            closes = [float(c["c"]) for c in candles]
-            highs = [float(c["h"]) for c in candles]
-            lows = [float(c["l"]) for c in candles]
+            closes = pd.Series([float(c["c"]) for c in candles])
+            highs = pd.Series([float(c["h"]) for c in candles])
+            lows = pd.Series([float(c["l"]) for c in candles])
+            volumes = pd.Series([float(c.get("v", 0)) for c in candles])
 
-            signals = self._compute_signals(closes, highs, lows)
+            adx_ind = ta.trend.ADXIndicator(highs, lows, closes, window=14)
+            adx_val = adx_ind.adx().iloc[-1]
+            if adx_val < config.MOMENTUM_ADX_GATE:
+                continue
 
-            # Count votes
-            bull_votes = sum(1 for v in signals.values() if v == 1)
-            bear_votes = sum(1 for v in signals.values() if v == -1)
+            bull_score, bear_score, details = self._compute_scores(
+                closes, highs, lows, volumes
+            )
 
-            threshold = config.MOMENTUM_VOTE_THRESHOLD
+            htf_candles = await self._fetch_candles(
+                coin, config.MOMENTUM_HTF_INTERVAL, config.MOMENTUM_HTF_CANDLE_COUNT
+            )
+            htf_bull, htf_bear = 0, 0
+            if htf_candles and len(htf_candles) >= 10:
+                htf_closes = pd.Series([float(c["c"]) for c in htf_candles])
+                ema_htf_fast = ta.trend.EMAIndicator(
+                    htf_closes, window=config.TREND_EMA_FAST
+                ).ema_indicator().iloc[-1]
+                ema_htf_slow = ta.trend.EMAIndicator(
+                    htf_closes, window=config.TREND_EMA_SLOW
+                ).ema_indicator().iloc[-1]
+                if ema_htf_fast > ema_htf_slow:
+                    htf_bull = 15
+                elif ema_htf_fast < ema_htf_slow:
+                    htf_bear = 15
 
-            if bull_votes >= threshold and bull_votes > bear_votes:
+            total_bull = bull_score + htf_bull
+            total_bear = bear_score + htf_bear
+
+            if total_bull >= config.MOMENTUM_VOTE_THRESHOLD and total_bull > total_bear:
                 direction = "LONG"
-                vote_count = bull_votes
-            elif bear_votes >= threshold and bear_votes > bull_votes:
+                score = total_bull
+            elif total_bear >= config.MOMENTUM_VOTE_THRESHOLD and total_bear > total_bull:
                 direction = "SHORT"
-                vote_count = bear_votes
+                score = total_bear
             else:
                 continue
 
-            # Score: scale votes into 0-100
-            score = (vote_count / 6) * 100
+            if score <= best_score:
+                continue
 
-            if vote_count > best_vote_count:
-                best_vote_count = vote_count
-                # Build reason string from individual signals
-                signal_details = ", ".join(
-                    f"{name}={'B' if v == 1 else 'S' if v == -1 else '-'}"
-                    for name, v in signals.items()
-                )
-                confidence = (
-                    "HIGH" if vote_count >= 5 else "MEDIUM" if vote_count >= 4 else "LOW"
-                )
-                best_signal = Signal(
-                    coin=coin,
-                    direction=direction,
-                    strategy="momentum",
-                    score=score,
-                    confidence=confidence,
-                    reason=f"{vote_count}/6 signals {direction} | {signal_details}",
-                )
+            best_score = score
+            confidence = "HIGH" if score >= 75 else "MEDIUM"
+
+            best_signal = Signal(
+                coin=coin,
+                direction=direction,
+                strategy="momentum",
+                score=score,
+                confidence=confidence,
+                reason=(
+                    f"Score {score:.0f}/100 {direction} | ADX={adx_val:.0f} | "
+                    f"{details} | 4h={'aligned' if (htf_bull if direction == 'LONG' else htf_bear) > 0 else 'neutral'}"
+                ),
+                stop_loss_pct=0.015,
+                take_profit_pct=0.035,
+                trailing_stop_pct=0.012,
+            )
 
         return best_signal
 
-    def _compute_signals(
-        self, closes: List[float], highs: List[float], lows: List[float]
-    ) -> Dict[str, int]:
-        """Compute all 6 signals. Returns {signal_name: +1/-1/0}."""
-        close_series = pd.Series(closes)
-        high_series = pd.Series(highs)
-        low_series = pd.Series(lows)
+    def _compute_scores(
+        self, closes: pd.Series, highs: pd.Series, lows: pd.Series, volumes: pd.Series
+    ) -> tuple:
+        bull = 0.0
+        bear = 0.0
+        parts: List[str] = []
 
-        signals: Dict[str, int] = {}
-
-        # 1. RSI(8) -- oversold=bullish, overbought=bearish
         rsi = ta.momentum.RSIIndicator(
-            close_series, window=config.MOMENTUM_RSI_PERIOD
-        ).rsi()
-        last_rsi = rsi.iloc[-1]
-        signals["rsi"] = 1 if last_rsi < 30 else (-1 if last_rsi > 70 else 0)
+            closes, window=config.MOMENTUM_RSI_PERIOD
+        ).rsi().iloc[-1]
+        if rsi > config.MOMENTUM_RSI_BULL:
+            bull += 20
+            parts.append(f"RSI={rsi:.0f}↑")
+        elif rsi < config.MOMENTUM_RSI_BEAR:
+            bear += 20
+            parts.append(f"RSI={rsi:.0f}↓")
+        else:
+            parts.append(f"RSI={rsi:.0f}")
 
-        # 2. MACD(14, 23, 9)
         macd = ta.trend.MACD(
-            close_series,
+            closes,
             window_slow=config.MOMENTUM_MACD_SLOW,
             window_fast=config.MOMENTUM_MACD_FAST,
             window_sign=config.MOMENTUM_MACD_SIGNAL,
         )
-        macd_diff = macd.macd_diff().iloc[-1]
-        signals["macd"] = 1 if macd_diff > 0 else -1
+        hist = macd.macd_diff()
+        hist_val = hist.iloc[-1]
+        hist_prev = hist.iloc[-2] if len(hist) >= 2 else 0
+        hist_slope_up = hist_val > hist_prev
+        hist_slope_down = hist_val < hist_prev
 
-        # 3. EMA crossover (7 vs 26)
+        if hist_val > 0 and hist_slope_up:
+            bull += 20
+            parts.append("MACD↑")
+        elif hist_val < 0 and hist_slope_down:
+            bear += 20
+            parts.append("MACD↓")
+        elif hist_val > 0:
+            bull += 10
+            parts.append("MACD+")
+        elif hist_val < 0:
+            bear += 10
+            parts.append("MACD-")
+
         ema_fast = ta.trend.EMAIndicator(
-            close_series, window=config.MOMENTUM_EMA_FAST
-        ).ema_indicator()
+            closes, window=config.MOMENTUM_EMA_FAST
+        ).ema_indicator().iloc[-1]
         ema_slow = ta.trend.EMAIndicator(
-            close_series, window=config.MOMENTUM_EMA_SLOW
-        ).ema_indicator()
-        signals["ema"] = 1 if ema_fast.iloc[-1] > ema_slow.iloc[-1] else -1
+            closes, window=config.MOMENTUM_EMA_SLOW
+        ).ema_indicator().iloc[-1]
+        if ema_fast > ema_slow:
+            bull += 15
+            parts.append("EMA↑")
+        else:
+            bear += 15
+            parts.append("EMA↓")
 
-        # 4. Bollinger Bands(20, 2)
         bb = ta.volatility.BollingerBands(
-            close_series,
+            closes,
             window=config.MOMENTUM_BB_PERIOD,
             window_dev=config.MOMENTUM_BB_STD,
         )
-        last_close = close_series.iloc[-1]
-        if last_close < bb.bollinger_lband().iloc[-1]:
-            signals["bb"] = 1  # Below lower band -> bullish reversal
-        elif last_close > bb.bollinger_hband().iloc[-1]:
-            signals["bb"] = -1  # Above upper band -> bearish reversal
+        pct_b = bb.bollinger_pband().iloc[-1]
+        if pct_b > 0.6:
+            bull += 15
+            parts.append(f"%B={pct_b:.2f}↑")
+        elif pct_b < 0.4:
+            bear += 15
+            parts.append(f"%B={pct_b:.2f}↓")
         else:
-            signals["bb"] = 0
+            parts.append(f"%B={pct_b:.2f}")
 
-        # 5. 6h momentum (simple returns)
-        if len(closes) >= 6:
-            mom_6h = (closes[-1] - closes[-6]) / closes[-6]
-            signals["mom_6h"] = 1 if mom_6h > 0 else -1
-        else:
-            signals["mom_6h"] = 0
+        if len(closes) >= 12 and len(volumes) >= 20:
+            ret_12h = (closes.iloc[-1] - closes.iloc[-12]) / closes.iloc[-12]
+            avg_vol = volumes.iloc[-20:].mean()
+            cur_vol = volumes.iloc[-1]
+            vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1.0
+            weighted_mom = ret_12h * min(vol_ratio, 3.0)
 
-        # 6. 12h momentum
-        if len(closes) >= 12:
-            mom_12h = (closes[-1] - closes[-12]) / closes[-12]
-            signals["mom_12h"] = 1 if mom_12h > 0 else -1
-        else:
-            signals["mom_12h"] = 0
+            if weighted_mom > 0.005:
+                bull += 15
+                parts.append(f"VMom={weighted_mom:+.3f}")
+            elif weighted_mom < -0.005:
+                bear += 15
+                parts.append(f"VMom={weighted_mom:+.3f}")
+            else:
+                parts.append(f"VMom={weighted_mom:+.3f}")
 
-        return signals
+        return bull, bear, " ".join(parts)
 
-    async def _fetch_candles(self, coin: str) -> list:
-        """Fetch last MOMENTUM_CANDLE_COUNT candles from mainnet."""
+    async def _fetch_candles(self, coin: str, interval: str, count: int) -> list:
+        if self.candle_cache:
+            return await self.candle_cache.get(coin, interval, count)
         try:
             end_time = int(time.time() * 1000)
-            interval = config.MOMENTUM_CANDLE_INTERVAL
-            # Convert interval to milliseconds for start_time calculation
-            interval_ms = self._interval_to_ms(interval)
-            start_time = end_time - (config.MOMENTUM_CANDLE_COUNT * interval_ms)
-
+            unit = interval[-1]
+            value = int(interval[:-1])
+            mult = {"m": 60_000, "h": 3_600_000, "d": 86_400_000}.get(unit, 3_600_000)
+            start_time = end_time - (count * value * mult)
             candles = await asyncio.to_thread(
                 self.info.candles_snapshot, coin, interval, start_time, end_time
             )
             return candles or []
         except Exception as e:
-            logger.debug(f"Failed to fetch candles for {coin}: {e}")
+            logger.debug(f"Failed to fetch {interval} candles for {coin}: {e}")
             return []
-
-    @staticmethod
-    def _interval_to_ms(interval: str) -> int:
-        """Convert candle interval string (e.g. '1h', '15m') to milliseconds."""
-        unit = interval[-1]
-        value = int(interval[:-1])
-        multipliers = {"m": 60_000, "h": 3_600_000, "d": 86_400_000}
-        return value * multipliers.get(unit, 3_600_000)
 
     def get_config_schema(self) -> Dict:
         return {
-            "vote_threshold": {
+            "score_threshold": {
                 "type": "int",
                 "default": config.MOMENTUM_VOTE_THRESHOLD,
-                "description": "Signals needed to trigger (out of 6)",
+                "description": "Min weighted score to trigger (out of 100)",
+            },
+            "adx_gate": {
+                "type": "int",
+                "default": config.MOMENTUM_ADX_GATE,
+                "description": "Min ADX to allow signals",
             },
             "rsi_period": {
                 "type": "int",
                 "default": config.MOMENTUM_RSI_PERIOD,
                 "description": "RSI lookback period",
-            },
-            "candle_interval": {
-                "type": "str",
-                "default": config.MOMENTUM_CANDLE_INTERVAL,
-                "description": "Candle interval for indicator computation",
             },
         }

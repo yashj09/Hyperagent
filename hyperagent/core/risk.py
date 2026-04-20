@@ -10,10 +10,10 @@ Handles:
 
 import logging
 import time
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import config
-from core.state import AgentState, ActivePosition, TradeRecord
+from core.state import AgentState, ActivePosition, Signal, TradeRecord
 from core.client import HyperLiquidClient
 
 logger = logging.getLogger(__name__)
@@ -168,10 +168,6 @@ class RiskManager:
     # ------------------------------------------------------------------
 
     def update_position_prices(self, prices: Dict[str, float]):
-        """
-        Update current prices for all positions and adjust trailing stops
-        when new highs/lows are printed.
-        """
         for pos in self.state.positions:
             new_price = prices.get(pos.coin)
             if new_price is None:
@@ -179,22 +175,23 @@ class RiskManager:
 
             pos.current_price = new_price
 
+            trail_pct = config.TRAILING_STOP_PCT
+            if pos.signal and pos.signal.trailing_stop_pct:
+                trail_pct = pos.signal.trailing_stop_pct
+
             is_long = pos.side == "long"
 
             if is_long:
-                # Update high-water mark and tighten trailing stop
                 if new_price > pos.high_water_mark:
                     pos.high_water_mark = new_price
                     pos.trailing_stop_price = round(
-                        new_price * (1 - config.TRAILING_STOP_PCT), 4
+                        new_price * (1 - trail_pct), 4
                     )
             else:
-                # Short: track low-water mark (stored in high_water_mark field,
-                # but semantically it's a low-water mark for shorts)
                 if new_price < pos.high_water_mark:
                     pos.high_water_mark = new_price
                     pos.trailing_stop_price = round(
-                        new_price * (1 + config.TRAILING_STOP_PCT), 4
+                        new_price * (1 + trail_pct), 4
                     )
 
             # Unrealised PnL
@@ -230,16 +227,56 @@ class RiskManager:
     # Position sizing
     # ------------------------------------------------------------------
 
-    def calculate_position_size(self, coin: str, price: float) -> float:
-        """
-        Calculate position size in coin units based on
-        POSITION_SIZE_USD and the current *price*.
-        Returns the formatted size ready for the exchange.
-        """
+    CORRELATED_GROUPS = [{"BTC", "ETH", "SOL"}, {"AVAX", "SUI", "LINK"}]
+
+    def calculate_position_size(
+        self, coin: str, price: float, signal: Optional[Signal] = None
+    ) -> float:
         if price <= 0:
             return 0.0
-        raw_size = config.POSITION_SIZE_USD / price
+
+        base = config.POSITION_SIZE_USD
+        if signal and signal.position_size_usd:
+            base = signal.position_size_usd
+
+        atr_val = self.state.atr.get(coin, 0)
+        if atr_val > 0 and price > 0:
+            atr_pct = atr_val / price
+            vol_scalar = 0.02 / max(atr_pct, 0.005)
+        else:
+            vol_scalar = 1.0
+
+        conv_scalar = 1.0
+        if signal and signal.score:
+            conv_scalar = signal.score / 75.0
+
+        final_usd = base * vol_scalar * conv_scalar
+        final_usd = max(25.0, min(500.0, final_usd))
+
+        raw_size = final_usd / price
         return self.client.format_size(raw_size, coin)
+
+    def check_correlation_guard(self, coin: str, direction: str) -> bool:
+        for group in self.CORRELATED_GROUPS:
+            if coin not in group:
+                continue
+            same_dir_count = sum(
+                1
+                for p in self.state.positions
+                if p.coin in group and p.side == direction.lower()
+            )
+            if same_dir_count >= 2:
+                self.state.add_log(
+                    f"[RISK] Correlation guard: blocked {direction} {coin} "
+                    f"({same_dir_count} correlated positions already open)"
+                )
+                return False
+        return True
+
+    def is_cooled_down(self, coin: str, cooldown: int = 0) -> bool:
+        cd = cooldown or config.TRADE_COOLDOWN_DEFAULT
+        last = self.state.last_trade_time.get(coin, 0)
+        return (time.time() - last) >= cd
 
     # ------------------------------------------------------------------
     # Helpers

@@ -2,7 +2,7 @@
 Strategy configuration screen.
 
 Allows the user to:
-  - Select a strategy (Liquidation Cascade / Momentum Flip)
+  - Select a strategy from the improved set
   - Toggle the AI assistant on/off
   - View strategy parameters in a read-only DataTable
   - Start or stop the active strategy
@@ -17,103 +17,99 @@ import config
 
 
 STRATEGY_DESCRIPTIONS = {
-    "cascade": (
-        "Liquidation Cascade Strategy\n"
-        "Scans for dense clusters of liquidation levels near the current price. "
-        "When the cascade score exceeds the threshold, the agent opens a position "
-        "in the direction of the expected cascade. Uses trailing stops to "
-        "ride the momentum of cascading liquidations."
+    "trend_follower": (
+        "ADX Trend Follower (CTA-style)\n"
+        "Uses ADX(14) on 4h candles to confirm trends, +DI/-DI for "
+        "direction, EMA(21/55) for confirmation, and pullback-to-EMA "
+        "entries. ATR-based dynamic stops. Sharpe 0.3-0.7 historically."
     ),
     "momentum": (
-        "Momentum Flip Strategy\n"
-        "Multi-indicator momentum strategy using RSI, MACD, EMA crossovers, "
-        "and Bollinger Bands. A voting system determines signal strength: "
-        "when enough indicators agree on direction, the agent enters."
+        "Enhanced Momentum (Weighted Scoring)\n"
+        "6-signal weighted scoring: RSI(8), MACD+slope, EMA crossover, "
+        "BB %B, volume-momentum, 4h confirmation. ADX gate filters "
+        "choppy markets. Score >= 60 to trigger."
     ),
-    "funding_sniper": (
-        "Funding Rate Sniper\n"
-        "Collects funding payments by trading against overcrowded positions. "
-        "When longs are paying extreme funding, goes SHORT to receive payments. "
-        "Near risk-free carry trade with mathematically guaranteed income per period."
+    "funding_carry": (
+        "Funding Rate Carry\n"
+        "Research-calibrated funding arbitrage. Requires >0.03% rate "
+        "(~33% APR), settlement timing window, trend filter, and "
+        "funding persistence. $200 positions for meaningful income."
     ),
     "volatility_breakout": (
-        "Volatility Breakout\n"
-        "Detects sudden price spikes on 5-minute candles and enters in the "
-        "breakout direction to ride momentum. Uses tight trailing stop to "
-        "catch the reversal. Most active in volatile markets."
+        "Volatility Squeeze Breakout\n"
+        "Detects Bollinger squeeze (BB inside Keltner), then trades "
+        "the breakout with ATR-adaptive thresholds, volume confirmation, "
+        "and continuation check. 15m candles, all 8 assets."
     ),
-    "orderbook_imbalance": (
-        "Orderbook Imbalance\n"
-        "Reads L2 orderbook depth in real-time. When buy-side volume is 2x+ "
-        "sell-side, goes LONG (and vice versa). Order flow imbalance predicts "
-        "short-term price direction."
+    "pairs_reversion": (
+        "Pairs Mean Reversion (Stat Arb)\n"
+        "Market-neutral pairs trading on BTC/ETH and SOL/AVAX. "
+        "Z-score on log price ratio: entry at 2σ, exit at mean, "
+        "stop at 3.5σ. Near-zero directional exposure. Sharpe 0.8-1.5."
     ),
 }
 
-CASCADE_PARAMS = [
-    ("Proximity %", f"{config.CASCADE_PROXIMITY_PCT * 100:.1f}%"),
-    ("Density Threshold", str(config.CASCADE_DENSITY_THRESHOLD)),
-    ("Cluster Width %", f"{config.CASCADE_CLUSTER_WIDTH_PCT * 100:.2f}%"),
-    ("Signal Threshold", str(config.CASCADE_SIGNAL_THRESHOLD)),
-    ("High Confidence", str(config.CASCADE_HIGH_CONFIDENCE)),
-    ("Position Size USD", f"${config.POSITION_SIZE_USD}"),
-    ("Max Leverage", f"{config.MAX_LEVERAGE}x"),
-    ("Trailing Stop %", f"{config.TRAILING_STOP_PCT * 100:.1f}%"),
-    ("Initial Stop %", f"{config.INITIAL_STOP_PCT * 100:.1f}%"),
-    ("Take Profit %", f"{config.TAKE_PROFIT_PCT * 100:.1f}%"),
-    ("Max Concurrent", str(config.MAX_CONCURRENT_POSITIONS)),
-    ("Max Daily Loss", f"${config.MAX_DAILY_LOSS_USD}"),
-    ("Scan Interval", f"{config.SCAN_INTERVAL_SECONDS}s"),
+TREND_PARAMS = [
+    ("ADX Period", str(config.TREND_ADX_PERIOD)),
+    ("ADX Threshold", str(config.TREND_ADX_THRESHOLD)),
+    ("EMA Fast", str(config.TREND_EMA_FAST)),
+    ("EMA Slow", str(config.TREND_EMA_SLOW)),
+    ("Candle Interval", config.TREND_CANDLE_INTERVAL),
+    ("Stop (ATR mult)", f"{config.TREND_STOP_ATR_MULT}x"),
+    ("TP (ATR mult)", f"{config.TREND_TP_ATR_MULT}x"),
+    ("Trail (ATR mult)", f"{config.TREND_TRAIL_ATR_MULT}x"),
+    ("Pullback (ATR mult)", f"{config.TREND_PULLBACK_ATR_MULT}x"),
 ]
 
 MOMENTUM_PARAMS = [
     ("RSI Period", str(config.MOMENTUM_RSI_PERIOD)),
-    ("MACD Fast", str(config.MOMENTUM_MACD_FAST)),
-    ("MACD Slow", str(config.MOMENTUM_MACD_SLOW)),
-    ("MACD Signal", str(config.MOMENTUM_MACD_SIGNAL)),
-    ("EMA Fast", str(config.MOMENTUM_EMA_FAST)),
-    ("EMA Slow", str(config.MOMENTUM_EMA_SLOW)),
-    ("BB Period", str(config.MOMENTUM_BB_PERIOD)),
-    ("BB Std Dev", str(config.MOMENTUM_BB_STD)),
-    ("Vote Threshold", str(config.MOMENTUM_VOTE_THRESHOLD)),
-    ("Candle Interval", config.MOMENTUM_CANDLE_INTERVAL),
-    ("Candle Count", str(config.MOMENTUM_CANDLE_COUNT)),
-    ("Position Size USD", f"${config.POSITION_SIZE_USD}"),
-    ("Trailing Stop %", f"{config.TRAILING_STOP_PCT * 100:.1f}%"),
-    ("Take Profit %", f"{config.TAKE_PROFIT_PCT * 100:.1f}%"),
+    ("RSI Bull/Bear", f"{config.MOMENTUM_RSI_BULL}/{config.MOMENTUM_RSI_BEAR}"),
+    ("MACD", f"{config.MOMENTUM_MACD_FAST}/{config.MOMENTUM_MACD_SLOW}/{config.MOMENTUM_MACD_SIGNAL}"),
+    ("EMA Fast/Slow", f"{config.MOMENTUM_EMA_FAST}/{config.MOMENTUM_EMA_SLOW}"),
+    ("ADX Gate", str(config.MOMENTUM_ADX_GATE)),
+    ("Score Threshold", str(config.MOMENTUM_VOTE_THRESHOLD)),
+    ("Stop %", "1.5%"),
+    ("TP %", "3.5%"),
+    ("Trail %", "1.2%"),
 ]
 
 FUNDING_PARAMS = [
-    ("Funding Threshold", "0.01% per 8h"),
-    ("High Threshold", "0.03% per 8h"),
-    ("Position Size USD", f"${config.POSITION_SIZE_USD}"),
-    ("Trailing Stop %", f"{config.TRAILING_STOP_PCT * 100:.1f}%"),
-    ("Take Profit %", f"{config.TAKE_PROFIT_PCT * 100:.1f}%"),
+    ("Funding Threshold", f"{config.FUNDING_THRESHOLD * 100:.3f}%"),
+    ("High Threshold", f"{config.FUNDING_HIGH_THRESHOLD * 100:.3f}%"),
+    ("Settlement Window", f"{config.FUNDING_SETTLEMENT_WINDOW}s"),
+    ("Persistence Periods", str(config.FUNDING_PERSISTENCE_PERIODS)),
+    ("Position Size", f"${config.FUNDING_POSITION_SIZE}"),
+    ("Stop %", "2.0%"),
+    ("Trail %", "1.5%"),
 ]
 
-VOLATILITY_PARAMS = [
-    ("Breakout Threshold", "0.3%"),
-    ("Strong Breakout", "0.6%"),
-    ("Candle Interval", "5m"),
-    ("Lookback Candles", "20"),
-    ("Position Size USD", f"${config.POSITION_SIZE_USD}"),
-    ("Trailing Stop %", f"{config.TRAILING_STOP_PCT * 100:.1f}%"),
+BREAKOUT_PARAMS = [
+    ("ATR Multiplier", f"{config.BREAKOUT_ATR_MULT}x"),
+    ("Squeeze Bars Min", str(config.BREAKOUT_SQUEEZE_BARS)),
+    ("Volume Multiplier", f"{config.BREAKOUT_VOLUME_MULT}x"),
+    ("Candle Interval", config.BREAKOUT_CANDLE_INTERVAL),
+    ("Lookback Candles", str(config.BREAKOUT_LOOKBACK_CANDLES)),
+    ("Stop %", "2.5%"),
+    ("TP %", "5.0%"),
+    ("Trail %", "2.0%"),
 ]
 
-ORDERBOOK_PARAMS = [
-    ("Imbalance Threshold", "1.8x"),
-    ("Strong Imbalance", "2.5x"),
-    ("Depth Levels", "10"),
-    ("Position Size USD", f"${config.POSITION_SIZE_USD}"),
-    ("Trailing Stop %", f"{config.TRAILING_STOP_PCT * 100:.1f}%"),
+PAIRS_PARAMS = [
+    ("Z-Score Entry", str(config.PAIRS_ZSCORE_ENTRY)),
+    ("Z-Score Exit", str(config.PAIRS_ZSCORE_EXIT)),
+    ("Z-Score Stop", str(config.PAIRS_ZSCORE_STOP)),
+    ("Lookback Hours", str(config.PAIRS_LOOKBACK_HOURS)),
+    ("Min Correlation", str(config.PAIRS_MIN_CORRELATION)),
+    ("Size Per Leg", f"${config.PAIRS_POSITION_SIZE_PER_LEG}"),
+    ("Pairs", "BTC/ETH, SOL/AVAX"),
 ]
 
 STRATEGY_PARAMS = {
-    "cascade": CASCADE_PARAMS,
+    "trend_follower": TREND_PARAMS,
     "momentum": MOMENTUM_PARAMS,
-    "funding_sniper": FUNDING_PARAMS,
-    "volatility_breakout": VOLATILITY_PARAMS,
-    "orderbook_imbalance": ORDERBOOK_PARAMS,
+    "funding_carry": FUNDING_PARAMS,
+    "volatility_breakout": BREAKOUT_PARAMS,
+    "pairs_reversion": PAIRS_PARAMS,
 }
 
 
@@ -121,19 +117,16 @@ class StrategyConfigScreen(Container):
     """Interactive strategy configuration panel."""
 
     class StrategyChanged(Message):
-        """Posted when the user changes the strategy selection."""
         def __init__(self, strategy: str):
             super().__init__()
             self.strategy = strategy
 
     class StrategyToggled(Message):
-        """Posted when the user clicks Start/Stop."""
         def __init__(self, running: bool):
             super().__init__()
             self.running = running
 
     class AIToggled(Message):
-        """Posted when the AI switch is toggled."""
         def __init__(self, enabled: bool):
             super().__init__()
             self.enabled = enabled
@@ -150,11 +143,11 @@ class StrategyConfigScreen(Container):
                 yield Label("Strategy:")
                 yield Select(
                     [
-                        ("Liquidation Cascade", "cascade"),
-                        ("Momentum Flip", "momentum"),
-                        ("Funding Sniper", "funding_sniper"),
+                        ("Trend Follower (CTA)", "trend_follower"),
+                        ("Momentum (Weighted)", "momentum"),
+                        ("Funding Carry", "funding_carry"),
                         ("Volatility Breakout", "volatility_breakout"),
-                        ("Orderbook Imbalance", "orderbook_imbalance"),
+                        ("Pairs Reversion", "pairs_reversion"),
                     ],
                     value=self.state.active_strategy,
                     id="strategy-select",
@@ -183,43 +176,34 @@ class StrategyConfigScreen(Container):
         yield DataTable(id="strategy-params-table")
 
     def on_mount(self):
-        """Set up the parameters table with initial data."""
         table = self.query_one("#strategy-params-table", DataTable)
         table.add_columns("Parameter", "Value")
         self._populate_params_table(self.state.active_strategy)
 
     def _populate_params_table(self, strategy: str):
-        """Fill the parameters table for the selected strategy."""
         table = self.query_one("#strategy-params-table", DataTable)
         table.clear()
-
-        params = STRATEGY_PARAMS.get(strategy, CASCADE_PARAMS)
+        params = STRATEGY_PARAMS.get(strategy, TREND_PARAMS)
         for name, value in params:
             table.add_row(name, value)
 
     def on_select_changed(self, event: Select.Changed):
-        """Handle strategy dropdown change."""
         if event.select.id == "strategy-select" and event.value is not None:
             strategy = str(event.value)
             self.state.active_strategy = strategy
 
-            # Update description
             desc_widget = self.query_one("#strategy-description", Static)
             desc_widget.update(STRATEGY_DESCRIPTIONS.get(strategy, ""))
 
-            # Update params table
             self._populate_params_table(strategy)
-
             self.post_message(self.StrategyChanged(strategy))
 
     def on_switch_changed(self, event: Switch.Changed):
-        """Handle AI toggle."""
         if event.switch.id == "ai-switch":
             self.state.ai_enabled = event.value
             self.post_message(self.AIToggled(event.value))
 
     def on_button_pressed(self, event: Button.Pressed):
-        """Handle Start/Stop button."""
         if event.button.id == "strategy-start-btn":
             btn = event.button
             if self.state.is_running:
@@ -240,9 +224,7 @@ class StrategyConfigScreen(Container):
             self.post_message(self.StrategyToggled(self.state.is_running))
 
     def refresh_state(self, state: AgentState):
-        """Sync the UI with external state changes."""
         self.state = state
-        # Update AI switch if changed externally
         try:
             sw = self.query_one("#ai-switch", Switch)
             if sw.value != state.ai_enabled:

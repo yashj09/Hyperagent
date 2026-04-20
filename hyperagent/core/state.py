@@ -35,12 +35,18 @@ class LiquidationCluster:
 class Signal:
     coin: str
     direction: str  # "LONG" or "SHORT"
-    strategy: str  # "cascade" or "momentum"
+    strategy: str
     score: float  # 0-100
     confidence: str  # "HIGH", "MEDIUM", "LOW"
     reason: str
     ai_reasoning: Optional[str] = None
     timestamp: float = field(default_factory=time.time)
+    stop_loss_pct: Optional[float] = None
+    take_profit_pct: Optional[float] = None
+    trailing_stop_pct: Optional[float] = None
+    position_size_usd: Optional[float] = None
+    hedge_coin: Optional[str] = None
+    hedge_direction: Optional[str] = None
 
 
 @dataclass
@@ -88,7 +94,7 @@ class AgentState:
     last_scan_time: float = 0.0
 
     # Strategy
-    active_strategy: str = "cascade"
+    active_strategy: str = "trend_follower"
     ai_enabled: bool = False
     cascade_scores: Dict[str, float] = field(default_factory=dict)
     active_signals: list = field(default_factory=list)
@@ -103,6 +109,11 @@ class AgentState:
     # Account
     account_value: float = 0.0
     available_margin: float = 0.0
+
+    # Regime & analytics
+    regime: Dict[str, str] = field(default_factory=dict)
+    atr: Dict[str, float] = field(default_factory=dict)
+    last_trade_time: Dict[str, float] = field(default_factory=dict)
 
     # Status
     is_running: bool = False

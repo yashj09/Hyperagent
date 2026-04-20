@@ -22,11 +22,13 @@ from core.client import HyperLiquidClient
 from core.risk import RiskManager
 from scanner.liquidation_scanner import LiquidationScanner
 from scanner.whale_addresses import get_all_addresses
-from strategies.cascade import CascadeStrategy
+from core.regime import RegimeDetector
+from core.candle_cache import CandleCache
+from strategies.trend_follower import TrendFollowerStrategy
 from strategies.momentum import MomentumStrategy
 from strategies.funding_sniper import FundingSniperStrategy
 from strategies.volatility_breakout import VolatilityBreakoutStrategy
-from strategies.orderbook_imbalance import OrderbookImbalanceStrategy
+from strategies.pairs_reversion import PairsReversionStrategy
 from strategies.ai_wrapper import AIWrapper
 from tui.screens.dashboard import DashboardScreen
 from tui.screens.strategy_config import StrategyConfigScreen
@@ -62,20 +64,26 @@ class HyperAgentApp(App):
         addresses = get_all_addresses()
         self.scanner = LiquidationScanner(self.client.info, addresses)
 
+        self.candle_cache = CandleCache(self.client.info)
+        self.regime_detector = RegimeDetector(self.client.info, self.candle_cache)
+
         self.strategies = {
-            "cascade": CascadeStrategy(self.scanner, self.client.info),
-            "momentum": MomentumStrategy(self.client.info),
-            "funding_sniper": FundingSniperStrategy(self.client.info),
-            "volatility_breakout": VolatilityBreakoutStrategy(self.client.info),
-            "orderbook_imbalance": OrderbookImbalanceStrategy(self.client.info),
+            "trend_follower": TrendFollowerStrategy(self.client.info, self.candle_cache),
+            "momentum": MomentumStrategy(self.client.info, self.candle_cache),
+            "funding_carry": FundingSniperStrategy(self.client.info, self.candle_cache),
+            "volatility_breakout": VolatilityBreakoutStrategy(self.client.info, self.candle_cache),
+            "pairs_reversion": PairsReversionStrategy(self.client.info, self.candle_cache),
         }
         self.ai_wrapper: AIWrapper | None = None
 
         self._prev_prices: dict = {}
 
-        self.state.add_log("[INIT] HyperAgent starting up...")
+        self.state.add_log("[INIT] HyperAgent v2 starting up...")
         self.state.add_log(f"[INIT] Monitoring: {', '.join(config.MONITORED_ASSETS)}")
         self.state.add_log(f"[INIT] Whale addresses loaded: {len(addresses)}")
+        self.state.add_log(
+            f"[INIT] Strategies: {', '.join(self.strategies.keys())}"
+        )
         self.state.add_log(f"[INIT] Default strategy: {self.state.active_strategy}")
 
     # ------------------------------------------------------------------
@@ -106,6 +114,7 @@ class HyperAgentApp(App):
         self.run_scanner()
         self.run_strategy()
         self.run_stop_loss_monitor()
+        self.run_regime_detector()
 
         # Periodic UI refresh
         self.set_interval(
@@ -215,7 +224,12 @@ class HyperAgentApp(App):
                     pass
 
             except Exception as exc:
-                self.state.add_log(f"[PRICE] Error: {exc}")
+                msg = str(exc)
+                if "429" in msg:
+                    self.state.add_log("[PRICE] Rate limited, backing off 30s")
+                    time.sleep(30)
+                    continue
+                self.state.add_log(f"[PRICE] Error: {msg[:100]}")
                 logger.exception("Price feed error")
 
             time.sleep(config.PRICE_POLL_INTERVAL)
@@ -296,6 +310,14 @@ class HyperAgentApp(App):
                     existing_coins = {p.coin for p in self.state.positions}
                     if signal.coin in existing_coins:
                         pass
+                    elif not self.risk.is_cooled_down(signal.coin):
+                        self.state.add_log(
+                            f"[RISK] Cooldown active for {signal.coin}"
+                        )
+                    elif not self.risk.check_correlation_guard(
+                        signal.coin, signal.direction
+                    ):
+                        pass
                     elif self.risk.check_daily_limits():
                         self._execute_signal(signal)
                     else:
@@ -305,7 +327,7 @@ class HyperAgentApp(App):
                 self.state.add_log(f"[STRATEGY] Error: {exc}")
                 logger.exception("Strategy error")
 
-            time.sleep(1)
+            time.sleep(config.STRATEGY_POLL_INTERVAL)
 
     def _execute_signal(self, signal: Signal):
         """Execute a trade based on a signal. Called from strategy worker thread."""
@@ -316,7 +338,7 @@ class HyperAgentApp(App):
                 self.state.add_log(f"[TRADE] No price for {coin}, skipping")
                 return
 
-            size = self.risk.calculate_position_size(coin, price)
+            size = self.risk.calculate_position_size(coin, price, signal)
             side = "buy" if signal.direction == "LONG" else "sell"
 
             result = asyncio.run(self.client.place_market_order(coin, side, size))
@@ -325,14 +347,18 @@ class HyperAgentApp(App):
                 entry_price = result.executed_price
                 is_long = signal.direction == "LONG"
 
+                sl_pct = signal.stop_loss_pct or config.INITIAL_STOP_PCT
+                tp_pct = signal.take_profit_pct or config.TAKE_PROFIT_PCT
+                trail_pct = signal.trailing_stop_pct or config.TRAILING_STOP_PCT
+
                 if is_long:
-                    sl_price = entry_price * (1 - config.INITIAL_STOP_PCT)
-                    tp_price = entry_price * (1 + config.TAKE_PROFIT_PCT)
-                    trail_price = entry_price * (1 - config.TRAILING_STOP_PCT)
+                    sl_price = entry_price * (1 - sl_pct)
+                    tp_price = entry_price * (1 + tp_pct) if tp_pct else entry_price * 2
+                    trail_price = entry_price * (1 - trail_pct)
                 else:
-                    sl_price = entry_price * (1 + config.INITIAL_STOP_PCT)
-                    tp_price = entry_price * (1 - config.TAKE_PROFIT_PCT)
-                    trail_price = entry_price * (1 + config.TRAILING_STOP_PCT)
+                    sl_price = entry_price * (1 + sl_pct)
+                    tp_price = entry_price * (1 - tp_pct) if tp_pct else entry_price * 0.5
+                    trail_price = entry_price * (1 + trail_pct)
 
                 position = ActivePosition(
                     coin=coin,
@@ -348,18 +374,93 @@ class HyperAgentApp(App):
                     entry_time=time.time(),
                 )
                 self.state.positions.append(position)
+                self.state.last_trade_time[coin] = time.time()
 
                 asyncio.run(self.risk.on_position_opened(position))
 
                 self.state.add_log(
                     f"[TRADE] Opened {signal.direction} {coin} "
-                    f"size={result.executed_size} @ ${entry_price:,.2f}"
+                    f"size={result.executed_size} @ ${entry_price:,.2f} "
+                    f"SL={sl_pct:.1%} TP={tp_pct:.1%} Trail={trail_pct:.1%}"
                 )
+
+                # Execute hedge leg for pairs trading
+                if signal.hedge_coin and signal.hedge_direction:
+                    self._execute_hedge_leg(signal)
+
             elif result.error_message:
                 self.state.add_log(f"[TRADE] Failed: {result.error_message}")
         except Exception as exc:
             self.state.add_log(f"[TRADE] Execution error: {exc}")
             logger.exception("Trade execution error")
+
+    def _execute_hedge_leg(self, signal: Signal):
+        """Execute the hedge leg for pairs trading."""
+        try:
+            hedge_coin = signal.hedge_coin
+            hedge_price = self.state.prices.get(hedge_coin, 0)
+            if hedge_price <= 0:
+                self.state.add_log(f"[TRADE] No price for hedge {hedge_coin}")
+                return
+
+            hedge_size = self.risk.calculate_position_size(
+                hedge_coin, hedge_price, signal
+            )
+            hedge_side = "buy" if signal.hedge_direction == "LONG" else "sell"
+
+            result = asyncio.run(
+                self.client.place_market_order(hedge_coin, hedge_side, hedge_size)
+            )
+
+            if result.success and result.executed_size > 0:
+                entry_price = result.executed_price
+                is_long = signal.hedge_direction == "LONG"
+
+                sl_pct = signal.stop_loss_pct or config.INITIAL_STOP_PCT
+                trail_pct = signal.trailing_stop_pct or config.TRAILING_STOP_PCT
+
+                if is_long:
+                    sl_price = entry_price * (1 - sl_pct)
+                    tp_price = entry_price * 2
+                    trail_price = entry_price * (1 - trail_pct)
+                else:
+                    sl_price = entry_price * (1 + sl_pct)
+                    tp_price = entry_price * 0.5
+                    trail_price = entry_price * (1 + trail_pct)
+
+                hedge_signal = Signal(
+                    coin=hedge_coin,
+                    direction=signal.hedge_direction,
+                    strategy=signal.strategy,
+                    score=signal.score,
+                    confidence=signal.confidence,
+                    reason=f"Hedge leg for {signal.coin}",
+                )
+                position = ActivePosition(
+                    coin=hedge_coin,
+                    side="long" if is_long else "short",
+                    entry_price=entry_price,
+                    current_price=entry_price,
+                    size=result.executed_size,
+                    stop_loss_price=sl_price,
+                    take_profit_price=tp_price,
+                    trailing_stop_price=trail_price,
+                    high_water_mark=entry_price,
+                    signal=hedge_signal,
+                    entry_time=time.time(),
+                )
+                self.state.positions.append(position)
+                self.state.last_trade_time[hedge_coin] = time.time()
+
+                asyncio.run(self.risk.on_position_opened(position))
+
+                self.state.add_log(
+                    f"[TRADE] Hedge {signal.hedge_direction} {hedge_coin} "
+                    f"size={result.executed_size} @ ${entry_price:,.2f}"
+                )
+        except Exception as exc:
+            self.state.add_log(f"[TRADE] Hedge execution error: {exc}")
+            logger.exception("Hedge execution error")
 
     @work(exclusive=True, thread=True, group="stop_loss")
     def run_stop_loss_monitor(self):
@@ -380,6 +481,26 @@ class HyperAgentApp(App):
                     logger.exception("Stop-loss monitor error")
 
             time.sleep(config.STOP_LOSS_POLL_INTERVAL)
+
+    @work(exclusive=True, thread=True, group="regime")
+    def run_regime_detector(self):
+        """Classify market regimes every REGIME_UPDATE_INTERVAL seconds."""
+        self.state.add_log("[REGIME] Regime detector started")
+        time.sleep(10)
+
+        while True:
+            try:
+                asyncio.run(self.regime_detector.update(self.state))
+                regimes = ", ".join(
+                    f"{c}={r}" for c, r in list(self.state.regime.items())[:4]
+                )
+                if regimes:
+                    self.state.add_log(f"[REGIME] {regimes}")
+            except Exception as exc:
+                self.state.add_log(f"[REGIME] Error: {exc}")
+                logger.exception("Regime detector error")
+
+            time.sleep(config.REGIME_UPDATE_INTERVAL)
 
     def _flash_stop_loss(self):
         """Called from worker thread to flash the positions panel."""
