@@ -4,15 +4,30 @@ Strategy configuration screen.
 Allows the user to:
   - Select a strategy from the improved set
   - Toggle the AI assistant on/off
-  - View strategy parameters in a read-only DataTable
+  - View strategy parameters in a DataTable
+  - EDIT any parameter inline (click a row -> modal -> save mutates config)
   - Start or stop the active strategy
+
+The parameter display is driven by tui/param_schema.py, which also
+handles validation + format/parse so the same schema defines both the
+read-only display and the edit dialog.
+
+Mutations to `config` module globals take effect on the NEXT call to
+`strategy.generate_signal(...)` because strategies read `config.X`
+every iteration (module attribute lookup, not captured at init).
 """
+
+from __future__ import annotations
+
+from typing import Any, Optional
 
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Static, Select, Switch, Button, DataTable, Label
 from textual.message import Message
 
 from core.state import AgentState
+from tui.param_schema import ParamSpec, check_invariants, get_specs_for, get_spec_by_key
+from tui.screens.edit_param_modal import EditParamModal
 import config
 
 
@@ -57,87 +72,9 @@ STRATEGY_DESCRIPTIONS = {
     ),
 }
 
-TREND_PARAMS = [
-    ("ADX Period", str(config.TREND_ADX_PERIOD)),
-    ("ADX Threshold", str(config.TREND_ADX_THRESHOLD)),
-    ("EMA Fast", str(config.TREND_EMA_FAST)),
-    ("EMA Slow", str(config.TREND_EMA_SLOW)),
-    ("Candle Interval", config.TREND_CANDLE_INTERVAL),
-    ("Stop (ATR mult)", f"{config.TREND_STOP_ATR_MULT}x"),
-    ("TP (ATR mult)", f"{config.TREND_TP_ATR_MULT}x"),
-    ("Trail (ATR mult)", f"{config.TREND_TRAIL_ATR_MULT}x"),
-    ("Pullback (ATR mult)", f"{config.TREND_PULLBACK_ATR_MULT}x"),
-]
-
-MOMENTUM_PARAMS = [
-    ("RSI Period", str(config.MOMENTUM_RSI_PERIOD)),
-    ("RSI Bull/Bear", f"{config.MOMENTUM_RSI_BULL}/{config.MOMENTUM_RSI_BEAR}"),
-    ("MACD", f"{config.MOMENTUM_MACD_FAST}/{config.MOMENTUM_MACD_SLOW}/{config.MOMENTUM_MACD_SIGNAL}"),
-    ("EMA Fast/Slow", f"{config.MOMENTUM_EMA_FAST}/{config.MOMENTUM_EMA_SLOW}"),
-    ("ADX Gate", str(config.MOMENTUM_ADX_GATE)),
-    ("Score Threshold", str(config.MOMENTUM_VOTE_THRESHOLD)),
-    ("Stop %", "1.5%"),
-    ("TP %", "3.5%"),
-    ("Trail %", "1.2%"),
-]
-
-FUNDING_PARAMS = [
-    ("Funding Threshold", f"{config.FUNDING_THRESHOLD * 100:.3f}%"),
-    ("High Threshold", f"{config.FUNDING_HIGH_THRESHOLD * 100:.3f}%"),
-    ("Settlement Window", f"{config.FUNDING_SETTLEMENT_WINDOW}s"),
-    ("Persistence Periods", str(config.FUNDING_PERSISTENCE_PERIODS)),
-    ("Position Size", f"${config.FUNDING_POSITION_SIZE}"),
-    ("Stop %", "2.0%"),
-    ("Trail %", "1.5%"),
-]
-
-BREAKOUT_PARAMS = [
-    ("ATR Multiplier", f"{config.BREAKOUT_ATR_MULT}x"),
-    ("Squeeze Bars Min", str(config.BREAKOUT_SQUEEZE_BARS)),
-    ("Volume Multiplier", f"{config.BREAKOUT_VOLUME_MULT}x"),
-    ("Candle Interval", config.BREAKOUT_CANDLE_INTERVAL),
-    ("Lookback Candles", str(config.BREAKOUT_LOOKBACK_CANDLES)),
-    ("Stop %", "2.5%"),
-    ("TP %", "5.0%"),
-    ("Trail %", "2.0%"),
-]
-
-PAIRS_PARAMS = [
-    ("Z-Score Entry", str(config.PAIRS_ZSCORE_ENTRY)),
-    ("Z-Score Exit", str(config.PAIRS_ZSCORE_EXIT)),
-    ("Z-Score Stop", str(config.PAIRS_ZSCORE_STOP)),
-    ("Lookback Hours", str(config.PAIRS_LOOKBACK_HOURS)),
-    ("Min Correlation", str(config.PAIRS_MIN_CORRELATION)),
-    ("Size Per Leg", f"${config.PAIRS_POSITION_SIZE_PER_LEG}"),
-    ("Pairs", "BTC/ETH, SOL/AVAX"),
-]
-
-CASCADE_V2_PARAMS = [
-    ("Window", f"{config.CASCADE_V2_WINDOW_MINUTES} min"),
-    ("Min Event Size", f"${config.CASCADE_V2_MIN_EVENT_USD:,}"),
-    ("BTC Threshold", f"${config.CASCADE_V2_THRESHOLD_BTC_USD/1e6:.1f}M"),
-    ("ETH Threshold", f"${config.CASCADE_V2_THRESHOLD_ETH_USD/1e6:.1f}M"),
-    ("Default Threshold", f"${config.CASCADE_V2_THRESHOLD_DEFAULT_USD/1e6:.1f}M"),
-    ("Imbalance Ratio", f"{config.CASCADE_V2_IMBALANCE_RATIO}x"),
-    ("Acceleration", f"{config.CASCADE_V2_ACCELERATION_THRESHOLD}x"),
-    ("Poll Interval", f"{config.HYPEDEXER_POLL_INTERVAL}s"),
-    ("Stop %", "2.5%"),
-    ("TP %", "5.0%"),
-    ("Trail %", "1.8%"),
-]
-
-STRATEGY_PARAMS = {
-    "trend_follower": TREND_PARAMS,
-    "momentum": MOMENTUM_PARAMS,
-    "funding_carry": FUNDING_PARAMS,
-    "volatility_breakout": BREAKOUT_PARAMS,
-    "pairs_reversion": PAIRS_PARAMS,
-    "liquidation_cascade_v2": CASCADE_V2_PARAMS,
-}
-
 
 class StrategyConfigScreen(Container):
-    """Interactive strategy configuration panel."""
+    """Interactive strategy configuration panel with editable params."""
 
     class StrategyChanged(Message):
         def __init__(self, strategy: str):
@@ -154,9 +91,22 @@ class StrategyConfigScreen(Container):
             super().__init__()
             self.enabled = enabled
 
+    class ParamChanged(Message):
+        """Emitted after a parameter edit is applied to config."""
+
+        def __init__(self, config_key: str, old_value: Any, new_value: Any):
+            super().__init__()
+            self.config_key = config_key
+            self.old_value = old_value
+            self.new_value = new_value
+
     def __init__(self, state: AgentState, **kwargs):
         super().__init__(id="strategy-container", **kwargs)
         self.state = state
+        # Row index -> ParamSpec, rebuilt every time we repopulate the table.
+        # Lets us resolve a clicked row back to its spec without relying on
+        # label text (which may be formatted/localized).
+        self._row_specs: list[ParamSpec] = []
 
     def compose(self):
         yield Static("STRATEGY CONFIGURATION", id="strategy-header")
@@ -197,19 +147,75 @@ class StrategyConfigScreen(Container):
             id="strategy-description",
         )
 
-        yield DataTable(id="strategy-params-table")
+        yield Static(
+            "Tip: click any parameter row (or press Enter) to edit its value.",
+            id="strategy-params-hint",
+        )
+
+        yield DataTable(id="strategy-params-table", cursor_type="row")
 
     def on_mount(self):
         table = self.query_one("#strategy-params-table", DataTable)
         table.add_columns("Parameter", "Value")
+        table.zebra_stripes = True
         self._populate_params_table(self.state.active_strategy)
 
-    def _populate_params_table(self, strategy: str):
+    # ------------------------------------------------------------------
+    # Table population
+    # ------------------------------------------------------------------
+
+    def _populate_params_table(self, strategy: str) -> None:
+        """Fill the DataTable from schema, reading live config values.
+
+        Called on initial mount, strategy change, and after any edit.
+        """
         table = self.query_one("#strategy-params-table", DataTable)
         table.clear()
-        params = STRATEGY_PARAMS.get(strategy, TREND_PARAMS)
-        for name, value in params:
-            table.add_row(name, value)
+        self._row_specs = []
+
+        specs = get_specs_for(strategy)
+        # Group header: inserted as a spec-less row so users see the divide
+        # between "this strategy's knobs" and "shared risk knobs".
+        strategy_only = [s for s in specs if s.config_key in {
+            sp.config_key for sp in _strategy_only_specs(strategy)
+        }]
+        risk_only = [s for s in specs if s not in strategy_only]
+
+        if strategy_only:
+            table.add_row("[b]─── Strategy ───[/b]", "")
+            self._row_specs.append(None)
+            for spec in strategy_only:
+                self._add_spec_row(table, spec)
+
+        if risk_only:
+            table.add_row("[b]─── Risk & Sizing ───[/b]", "")
+            self._row_specs.append(None)
+            for spec in risk_only:
+                self._add_spec_row(table, spec)
+
+    def _add_spec_row(self, table: DataTable, spec: ParamSpec) -> None:
+        raw = getattr(config, spec.config_key, None)
+        value_str = spec.format(raw) if raw is not None else "?"
+        table.add_row(spec.label, value_str)
+        self._row_specs.append(spec)
+
+    def _refresh_row(self, spec: ParamSpec) -> None:
+        """Update one row in place after an edit (avoids full rebuild)."""
+        table = self.query_one("#strategy-params-table", DataTable)
+        try:
+            row_index = self._row_specs.index(spec)
+        except ValueError:
+            # Spec no longer present (e.g. user switched strategy mid-edit)
+            return
+        raw = getattr(config, spec.config_key, None)
+        table.update_cell_at(
+            (row_index, 1),
+            spec.format(raw) if raw is not None else "?",
+        )
+
+    # ------------------------------------------------------------------
+    # UI events
+    # ------------------------------------------------------------------
 
     def on_select_changed(self, event: Select.Changed):
         if event.select.id == "strategy-select" and event.value is not None:
@@ -247,6 +253,76 @@ class StrategyConfigScreen(Container):
 
             self.post_message(self.StrategyToggled(self.state.is_running))
 
+    def on_data_table_row_selected(self, event: DataTable.RowSelected) -> None:
+        """A parameter row was activated (click or Enter). Open the edit modal."""
+        table = self.query_one("#strategy-params-table", DataTable)
+        if event.data_table is not table:
+            return
+
+        # Resolve row index -> spec. Section headers have None and are ignored.
+        idx = table.get_row_index(event.row_key)
+        if idx is None or idx >= len(self._row_specs):
+            return
+        spec = self._row_specs[idx]
+        if spec is None:
+            return  # section header row
+
+        current_value = getattr(config, spec.config_key, None)
+        if current_value is None:
+            return
+
+        # Build a cross-field invariant checker that the modal can call on
+        # every keystroke. Closes over the CURRENT state.active_strategy and
+        # the CURRENT config module, so invariants are always evaluated
+        # against fresh values.
+        strategy_name = self.state.active_strategy
+
+        def _check_cross_field(new_value: Any) -> Optional[str]:
+            # If the edit is an integer-kind, coerce before running invariants
+            # — else comparisons like EMA_FAST<EMA_SLOW get confused by
+            # float-vs-int mixing (30.0 == 30 numerically but trips some
+            # strict-int checks elsewhere).
+            if spec.kind in ("int", "seconds", "minutes"):
+                new_value = int(new_value)
+            return check_invariants(config, strategy_name, spec.config_key, new_value)
+
+        # Push the modal; callback runs on dismiss with the parsed new value
+        # (or None if the user cancelled).
+        def _on_save(new_value: Optional[Any]) -> None:
+            if new_value is None:
+                return
+            self._apply_edit(spec, current_value, new_value)
+
+        self.app.push_screen(
+            EditParamModal(spec, current_value, extra_validator=_check_cross_field),
+            _on_save,
+        )
+
+    # ------------------------------------------------------------------
+    # Config mutation
+    # ------------------------------------------------------------------
+
+    def _apply_edit(self, spec: ParamSpec, old_value: Any, new_value: Any) -> None:
+        """Mutate config module and refresh the row.
+
+        Strategies read `config.X` on every generate_signal() call, so the
+        new value takes effect on the next strategy loop iteration (within
+        STRATEGY_POLL_INTERVAL, typically 15s).
+        """
+        # Preserve type: if the spec's canonical type is int but the parser
+        # returned float (e.g. "30" parsed as 30.0), coerce back. This keeps
+        # downstream type checks happy (e.g. `range(X)` needs int).
+        if spec.kind in ("int", "seconds", "minutes"):
+            new_value = int(new_value)
+
+        setattr(config, spec.config_key, new_value)
+        self._refresh_row(spec)
+        self.state.add_log(
+            f"[CONFIG] {spec.config_key}: "
+            f"{spec.format(old_value)} -> {spec.format(new_value)}"
+        )
+        self.post_message(self.ParamChanged(spec.config_key, old_value, new_value))
+
     def refresh_state(self, state: AgentState):
         self.state = state
         try:
@@ -255,3 +331,19 @@ class StrategyConfigScreen(Container):
                 sw.value = state.ai_enabled
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def _strategy_only_specs(strategy: str):
+    """Return the strategy-specific specs (without the shared risk specs).
+
+    Mirrors the logic in param_schema.get_specs_for but isolates the
+    strategy portion so we can render a visual divider between the two
+    sections in the table.
+    """
+    from tui.param_schema import STRATEGY_SPECS
+    return STRATEGY_SPECS.get(strategy, [])

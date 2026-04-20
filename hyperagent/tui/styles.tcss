@@ -215,9 +215,21 @@ Tab.-active {
     margin-bottom: 1;
 }
 
+#strategy-params-hint {
+    color: #8b949e;
+    padding: 0 1;
+    height: 1;
+    margin-bottom: 1;
+}
+
 #strategy-params-table {
     height: 1fr;
     border: solid #30363d;
+}
+
+#strategy-params-table > .datatable--cursor {
+    background: #1f6feb;
+    color: #ffffff;
 }
 
 /* ===== Journal Screen ===== */
