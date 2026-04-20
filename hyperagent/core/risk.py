@@ -35,9 +35,27 @@ class RiskManager:
         Called right after a new position is opened.
         Places native TP and SL trigger orders on HL as a safety net
         (in case the software trailing-stop loop is interrupted).
+
+        Native stops are placed WIDER than software stops by
+        config.NATIVE_STOP_WIDEN_MULT so the software trailing loop
+        gets the first chance to exit; the native order is disaster
+        recovery only.
         """
         is_long = position.side == "long"
         close_side = "sell" if is_long else "buy"
+
+        # Compute widened native SL price.
+        entry = position.entry_price
+        sw_sl_pct = abs(position.stop_loss_price - entry) / entry if entry > 0 else 0.0
+        native_sl_pct = sw_sl_pct * config.NATIVE_STOP_WIDEN_MULT
+
+        if is_long:
+            native_sl_price = entry * (1 - native_sl_pct)
+            # TP can stay the same — we WANT TP to fire if software loop is down
+            native_tp_price = position.take_profit_price
+        else:
+            native_sl_price = entry * (1 + native_sl_pct)
+            native_tp_price = position.take_profit_price
 
         # --- Take-profit trigger ---
         try:
@@ -45,13 +63,13 @@ class RiskManager:
                 coin=position.coin,
                 side=close_side,
                 size=position.size,
-                trigger_price=position.take_profit_price,
+                trigger_price=native_tp_price,
                 is_tp=True,
             )
             status = tp_result.get("status", "error")
             self.state.add_log(
                 f"[RISK] Native TP placed for {position.coin} "
-                f"@ ${position.take_profit_price:.2f}  (status={status})"
+                f"@ ${native_tp_price:.2f}  (status={status})"
             )
         except Exception as exc:
             self.state.add_log(
@@ -65,13 +83,15 @@ class RiskManager:
                 coin=position.coin,
                 side=close_side,
                 size=position.size,
-                trigger_price=position.stop_loss_price,
+                trigger_price=native_sl_price,
                 is_tp=False,
             )
             status = sl_result.get("status", "error")
             self.state.add_log(
                 f"[RISK] Native SL placed for {position.coin} "
-                f"@ ${position.stop_loss_price:.2f}  (status={status})"
+                f"@ ${native_sl_price:.2f} "
+                f"(software SL ${position.stop_loss_price:.2f}, "
+                f"widen={config.NATIVE_STOP_WIDEN_MULT}x)  (status={status})"
             )
         except Exception as exc:
             self.state.add_log(
@@ -93,31 +113,50 @@ class RiskManager:
         messages: List[str] = []
         positions_to_close: List[ActivePosition] = []
 
-        for pos in list(self.state.positions):
-            price = pos.current_price
-            if price <= 0:
-                continue
+        # Acquire snapshot under lock and compute close-list.
+        with self.state._lock:
+            positions_snapshot = list(self.state.positions)
 
-            is_long = pos.side == "long"
+            for pos in positions_snapshot:
+                price = pos.current_price
+                if price <= 0:
+                    continue
 
-            if is_long:
-                if price <= pos.trailing_stop_price:
-                    positions_to_close.append(pos)
-                    messages.append(
-                        f"[STOP-LOSS TRIGGERED] {pos.coin} LONG "
-                        f"trailing stop hit @ ${price:.2f} "
-                        f"(stop was ${pos.trailing_stop_price:.2f})"
-                    )
-            else:  # short
-                if price >= pos.trailing_stop_price:
-                    positions_to_close.append(pos)
-                    messages.append(
-                        f"[STOP-LOSS TRIGGERED] {pos.coin} SHORT "
-                        f"trailing stop hit @ ${price:.2f} "
-                        f"(stop was ${pos.trailing_stop_price:.2f})"
-                    )
+                is_long = pos.side == "long"
 
-        # Close breached positions
+                if is_long:
+                    if price <= pos.trailing_stop_price:
+                        positions_to_close.append(pos)
+                        messages.append(
+                            f"[STOP-LOSS TRIGGERED] {pos.coin} LONG "
+                            f"trailing stop hit @ ${price:.2f} "
+                            f"(stop was ${pos.trailing_stop_price:.2f})"
+                        )
+                else:  # short
+                    if price >= pos.trailing_stop_price:
+                        positions_to_close.append(pos)
+                        messages.append(
+                            f"[STOP-LOSS TRIGGERED] {pos.coin} SHORT "
+                            f"trailing stop hit @ ${price:.2f} "
+                            f"(stop was ${pos.trailing_stop_price:.2f})"
+                        )
+
+            # Pair-aware expansion: if any position in positions_to_close has a pair_id,
+            # drag its siblings into the close list so the hedge doesn't end up naked.
+            if positions_to_close:
+                pair_ids_closing = {p.pair_id for p in positions_to_close if p.pair_id}
+                if pair_ids_closing:
+                    for pos in list(self.state.positions):
+                        if pos in positions_to_close:
+                            continue
+                        if pos.pair_id and pos.pair_id in pair_ids_closing:
+                            positions_to_close.append(pos)
+                            messages.append(
+                                f"[RISK] Closing pair sibling {pos.coin} {pos.side.upper()} "
+                                f"(pair_id={pos.pair_id[:20]})"
+                            )
+
+        # Release lock for network I/O. Re-acquire only to mutate state.
         for pos in positions_to_close:
             try:
                 result = await self.client.close_position(pos.coin)
@@ -138,18 +177,18 @@ class RiskManager:
                     exit_time=time.time(),
                     ai_reasoning=pos.signal.ai_reasoning,
                 )
-                self.state.trade_history.append(record)
-                self.state.total_trades += 1
-                if pnl > 0:
-                    self.state.winning_trades += 1
-                self.state.daily_pnl += pnl
 
-                # Cancel remaining native orders for this coin
+                with self.state._lock:
+                    self.state.trade_history.append(record)
+                    self.state.total_trades += 1
+                    if pnl > 0:
+                        self.state.winning_trades += 1
+                    self.state.daily_pnl += pnl
+                    if pos in self.state.positions:
+                        self.state.positions.remove(pos)
+
+                # Cancel remaining native orders for this coin (outside lock).
                 await self.client.cancel_all_orders(pos.coin)
-
-                # Remove from active positions
-                if pos in self.state.positions:
-                    self.state.positions.remove(pos)
 
                 messages.append(
                     f"[RISK] Closed {pos.coin} {pos.side.upper()} — "
@@ -168,34 +207,35 @@ class RiskManager:
     # ------------------------------------------------------------------
 
     def update_position_prices(self, prices: Dict[str, float]):
-        for pos in self.state.positions:
-            new_price = prices.get(pos.coin)
-            if new_price is None:
-                continue
+        with self.state._lock:
+            for pos in self.state.positions:
+                new_price = prices.get(pos.coin)
+                if new_price is None:
+                    continue
 
-            pos.current_price = new_price
+                pos.current_price = new_price
 
-            trail_pct = config.TRAILING_STOP_PCT
-            if pos.signal and pos.signal.trailing_stop_pct:
-                trail_pct = pos.signal.trailing_stop_pct
+                trail_pct = config.TRAILING_STOP_PCT
+                if pos.signal and pos.signal.trailing_stop_pct:
+                    trail_pct = pos.signal.trailing_stop_pct
 
-            is_long = pos.side == "long"
+                is_long = pos.side == "long"
 
-            if is_long:
-                if new_price > pos.high_water_mark:
-                    pos.high_water_mark = new_price
-                    pos.trailing_stop_price = round(
-                        new_price * (1 - trail_pct), 4
-                    )
-            else:
-                if new_price < pos.high_water_mark:
-                    pos.high_water_mark = new_price
-                    pos.trailing_stop_price = round(
-                        new_price * (1 + trail_pct), 4
-                    )
+                if is_long:
+                    if new_price > pos.high_water_mark:
+                        pos.high_water_mark = new_price
+                        pos.trailing_stop_price = round(
+                            new_price * (1 - trail_pct), 4
+                        )
+                else:
+                    if new_price < pos.high_water_mark:
+                        pos.high_water_mark = new_price
+                        pos.trailing_stop_price = round(
+                            new_price * (1 + trail_pct), 4
+                        )
 
-            # Unrealised PnL
-            pos.unrealized_pnl = self._calculate_pnl(pos, new_price)
+                # Unrealised PnL
+                pos.unrealized_pnl = self._calculate_pnl(pos, new_price)
 
     # ------------------------------------------------------------------
     # Daily limits
@@ -206,11 +246,23 @@ class RiskManager:
         Returns True if we can still open new trades today.
         False when the daily loss cap has been breached or max
         concurrent positions are filled.
+
+        Loss limit is the STRICTER of:
+          - absolute USD cap (config.MAX_DAILY_LOSS_USD)
+          - percent-of-equity cap (config.MAX_DAILY_LOSS_PCT)
         """
-        if self.state.daily_pnl <= -config.MAX_DAILY_LOSS_USD:
+        abs_limit = -config.MAX_DAILY_LOSS_USD
+        pct_limit = (
+            -(self.state.account_value * config.MAX_DAILY_LOSS_PCT)
+            if self.state.account_value > 0
+            else abs_limit
+        )
+        # Stricter = smaller loss tolerated = LESS negative = max()
+        effective_limit = max(abs_limit, pct_limit)
+        if self.state.daily_pnl <= effective_limit:
             self.state.add_log(
-                f"[RISK] Daily loss limit reached: "
-                f"${self.state.daily_pnl:.2f} / -${config.MAX_DAILY_LOSS_USD}"
+                f"[RISK] Daily loss limit: ${self.state.daily_pnl:.2f} <= ${effective_limit:.2f} "
+                f"(abs=${abs_limit:.0f}, {config.MAX_DAILY_LOSS_PCT*100:.0f}%=${pct_limit:.0f})"
             )
             return False
 
@@ -223,11 +275,45 @@ class RiskManager:
 
         return True
 
+    def check_total_exposure(self, new_size_usd: float) -> bool:
+        """Block if adding new_size_usd would push total notional above cap."""
+        # If account value unknown (price feed hasn't populated yet), allow.
+        if self.state.account_value <= 0:
+            return True
+        with self.state._lock:
+            total_notional = sum(
+                pos.size * pos.current_price for pos in self.state.positions
+            )
+        cap = self.state.account_value * config.MAX_TOTAL_EXPOSURE_MULT
+        if total_notional + new_size_usd > cap:
+            self.state.add_log(
+                f"[RISK] Total exposure cap: ${total_notional:.0f} + ${new_size_usd:.0f} "
+                f"> ${cap:.0f} ({config.MAX_TOTAL_EXPOSURE_MULT}x account)"
+            )
+            return False
+        return True
+
+    def check_net_directional(self, direction: str) -> bool:
+        """Block if adding this direction would push net bias past the cap."""
+        with self.state._lock:
+            long_count = sum(1 for p in self.state.positions if p.side == "long")
+            short_count = sum(1 for p in self.state.positions if p.side == "short")
+        net = long_count - short_count
+        if direction == "LONG" and net >= config.MAX_NET_DIRECTIONAL_POSITIONS:
+            self.state.add_log(
+                f"[RISK] Net directional cap: {net} longs - shorts already at max (+{config.MAX_NET_DIRECTIONAL_POSITIONS})"
+            )
+            return False
+        if direction == "SHORT" and net <= -config.MAX_NET_DIRECTIONAL_POSITIONS:
+            self.state.add_log(
+                f"[RISK] Net directional cap: {net} longs - shorts already at min (-{config.MAX_NET_DIRECTIONAL_POSITIONS})"
+            )
+            return False
+        return True
+
     # ------------------------------------------------------------------
     # Position sizing
     # ------------------------------------------------------------------
-
-    CORRELATED_GROUPS = [{"BTC", "ETH", "SOL"}, {"AVAX", "SUI", "LINK"}]
 
     def calculate_position_size(
         self, coin: str, price: float, signal: Optional[Signal] = None
@@ -251,20 +337,29 @@ class RiskManager:
             conv_scalar = signal.score / 75.0
 
         final_usd = base * vol_scalar * conv_scalar
-        final_usd = max(25.0, min(500.0, final_usd))
+
+        # Skip-trade floor: if size falls below the minimum, return 0 to
+        # signal the caller to drop the trade rather than forcing a
+        # floor-sized position.
+        if final_usd < config.MIN_POSITION_SIZE_USD:
+            return 0.0
+
+        final_usd = min(config.MAX_POSITION_SIZE_USD, final_usd)
 
         raw_size = final_usd / price
         return self.client.format_size(raw_size, coin)
 
     def check_correlation_guard(self, coin: str, direction: str) -> bool:
-        for group in self.CORRELATED_GROUPS:
-            if coin not in group:
+        for group in config.CORRELATED_GROUPS:
+            group_set = set(group)
+            if coin not in group_set:
                 continue
-            same_dir_count = sum(
-                1
-                for p in self.state.positions
-                if p.coin in group and p.side == direction.lower()
-            )
+            with self.state._lock:
+                same_dir_count = sum(
+                    1
+                    for p in self.state.positions
+                    if p.coin in group_set and p.side == direction.lower()
+                )
             if same_dir_count >= 2:
                 self.state.add_log(
                     f"[RISK] Correlation guard: blocked {direction} {coin} "

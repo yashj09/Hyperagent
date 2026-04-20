@@ -16,6 +16,7 @@ import asyncio
 import logging
 import math
 import time
+import uuid
 from typing import Optional, Dict, List, Tuple
 
 import numpy as np
@@ -109,6 +110,11 @@ class PairsReversionStrategy(BaseStrategy):
             best_zscore = abs_z
             confidence = "HIGH" if score >= 75 else "MEDIUM"
 
+            # pair_id ties both legs together. Risk manager uses this to
+            # atomically close the sibling when either leg's stop fires.
+            # 12-char hex is plenty unique for concurrent live trades.
+            pair_id = f"pair-{uuid.uuid4().hex[:12]}"
+
             best_signal = Signal(
                 coin=primary_coin,
                 direction=primary_dir,
@@ -123,6 +129,7 @@ class PairsReversionStrategy(BaseStrategy):
                 position_size_usd=config.PAIRS_POSITION_SIZE_PER_LEG,
                 hedge_coin=coin_b,
                 hedge_direction=hedge_dir,
+                pair_id=pair_id,
             )
 
         return best_signal

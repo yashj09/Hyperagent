@@ -47,6 +47,14 @@ STRATEGY_DESCRIPTIONS = {
         "Z-score on log price ratio: entry at 2σ, exit at mean, "
         "stop at 3.5σ. Near-zero directional exposure. Sharpe 0.8-1.5."
     ),
+    "liquidation_cascade_v2": (
+        "Liquidation Cascade v2 (HypeDexer)\n"
+        "Trades ongoing liquidation cascades using the full HypeDexer "
+        "liquidation firehose (not just 28 wallets). Enters SHORT on "
+        "mass long-liquidations, LONG on mass short-squeezes. Gated by "
+        "USD threshold + 3x imbalance + 1.3x acceleration. Requires "
+        "HYPEDEXER_API_KEY env var."
+    ),
 }
 
 TREND_PARAMS = [
@@ -104,12 +112,27 @@ PAIRS_PARAMS = [
     ("Pairs", "BTC/ETH, SOL/AVAX"),
 ]
 
+CASCADE_V2_PARAMS = [
+    ("Window", f"{config.CASCADE_V2_WINDOW_MINUTES} min"),
+    ("Min Event Size", f"${config.CASCADE_V2_MIN_EVENT_USD:,}"),
+    ("BTC Threshold", f"${config.CASCADE_V2_THRESHOLD_BTC_USD/1e6:.1f}M"),
+    ("ETH Threshold", f"${config.CASCADE_V2_THRESHOLD_ETH_USD/1e6:.1f}M"),
+    ("Default Threshold", f"${config.CASCADE_V2_THRESHOLD_DEFAULT_USD/1e6:.1f}M"),
+    ("Imbalance Ratio", f"{config.CASCADE_V2_IMBALANCE_RATIO}x"),
+    ("Acceleration", f"{config.CASCADE_V2_ACCELERATION_THRESHOLD}x"),
+    ("Poll Interval", f"{config.HYPEDEXER_POLL_INTERVAL}s"),
+    ("Stop %", "2.5%"),
+    ("TP %", "5.0%"),
+    ("Trail %", "1.8%"),
+]
+
 STRATEGY_PARAMS = {
     "trend_follower": TREND_PARAMS,
     "momentum": MOMENTUM_PARAMS,
     "funding_carry": FUNDING_PARAMS,
     "volatility_breakout": BREAKOUT_PARAMS,
     "pairs_reversion": PAIRS_PARAMS,
+    "liquidation_cascade_v2": CASCADE_V2_PARAMS,
 }
 
 
@@ -148,6 +171,7 @@ class StrategyConfigScreen(Container):
                         ("Funding Carry", "funding_carry"),
                         ("Volatility Breakout", "volatility_breakout"),
                         ("Pairs Reversion", "pairs_reversion"),
+                        ("Liquidation Cascade v2", "liquidation_cascade_v2"),
                     ],
                     value=self.state.active_strategy,
                     id="strategy-select",

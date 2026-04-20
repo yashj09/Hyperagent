@@ -130,6 +130,30 @@ class FundingSniperStrategy(BaseStrategy):
             if direction == "LONG" and current_price < ema21 * 0.985:
                 return False
 
+            # Higher-timeframe trend filter: 4h EMA21. Reject funding trades that
+            # fight strong multi-day trends. Skipped silently if cache miss — the
+            # 1h check above is already a reasonable guard.
+            try:
+                if self.candle_cache:
+                    htf_candles = await self.candle_cache.get(coin, "4h", 50)
+                else:
+                    end_time_4h = int(time.time() * 1000)
+                    start_time_4h = end_time_4h - (50 * 4 * 60 * 60 * 1000)
+                    htf_candles = await asyncio.to_thread(
+                        self.info.candles_snapshot, coin, "4h", start_time_4h, end_time_4h
+                    )
+                if htf_candles and len(htf_candles) >= 21:
+                    htf_closes = pd.Series([float(c["c"]) for c in htf_candles])
+                    ema21_4h = ta.trend.EMAIndicator(htf_closes, window=21).ema_indicator().iloc[-1]
+                    htf_price = htf_closes.iloc[-1]
+                    # Wider tolerance (3%) on the slower timeframe
+                    if direction == "SHORT" and htf_price > ema21_4h * 1.03:
+                        return False
+                    if direction == "LONG" and htf_price < ema21_4h * 0.97:
+                        return False
+            except Exception:
+                pass  # If 4h fetch fails, fall through — 1h check is still in force
+
             return True
         except Exception:
             return True

@@ -59,6 +59,12 @@ class MomentumStrategy(BaseStrategy):
             if not price:
                 continue
 
+            # Regime gate: skip ranging markets entirely. Momentum trades lose
+            # systematically in chop; regime detector marks these.
+            regime = state.regime.get(coin)
+            if regime == "ranging":
+                continue
+
             candles = await self._fetch_candles(
                 coin, config.MOMENTUM_CANDLE_INTERVAL, config.MOMENTUM_CANDLE_COUNT
             )
@@ -106,6 +112,14 @@ class MomentumStrategy(BaseStrategy):
                 direction = "SHORT"
                 score = total_bear
             else:
+                continue
+
+            # Multi-timeframe gate: HTF must agree with direction. This is a strict
+            # gate (not just scoring bonus) — research shows MTF confirmation alone
+            # lifts Sharpe by 0.2-0.4 on crypto hourly momentum.
+            if direction == "LONG" and htf_bull == 0:
+                continue
+            if direction == "SHORT" and htf_bear == 0:
                 continue
 
             if score <= best_score:

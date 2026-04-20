@@ -52,6 +52,12 @@ class TrendFollowerStrategy(BaseStrategy):
             if not price:
                 continue
 
+            # Regime gate: trend following requires a trend. Skip ranging/squeeze
+            # markets where whipsaws dominate.
+            regime = state.regime.get(coin)
+            if regime in ("ranging", "squeeze"):
+                continue
+
             candles = await self._fetch_candles(coin)
             if not candles or len(candles) < 60:
                 continue

@@ -6,6 +6,7 @@ Central data store that Textual widgets read from.
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Deque
 from collections import deque
+import threading
 import time
 
 
@@ -47,6 +48,11 @@ class Signal:
     position_size_usd: Optional[float] = None
     hedge_coin: Optional[str] = None
     hedge_direction: Optional[str] = None
+    # pair_id: shared identifier for multi-leg trades (pairs reversion).
+    # When both legs carry the same pair_id, risk.py closes both atomically
+    # when either one trips its trailing stop — prevents one leg exiting
+    # and leaving the other naked-directional.
+    pair_id: Optional[str] = None
 
 
 @dataclass
@@ -78,6 +84,17 @@ class ActivePosition:
     signal: Signal
     entry_time: float
     unrealized_pnl: float = 0.0
+    # Echoed from signal.pair_id on open. None for standalone positions.
+    pair_id: Optional[str] = None
+
+
+@dataclass
+class RejectedSignal:
+    """Records a signal that was rejected before execution. Used for analysis."""
+
+    signal: Signal
+    reason: str  # "cooldown", "correlation", "daily_loss", "exposure", "net_directional", "duplicate_coin"
+    timestamp: float = field(default_factory=time.time)
 
 
 @dataclass
@@ -115,6 +132,15 @@ class AgentState:
     atr: Dict[str, float] = field(default_factory=dict)
     last_trade_time: Dict[str, float] = field(default_factory=dict)
 
+    # HypeDexer liquidation cascade v2 stats (per coin)
+    # Values are CoinLiquidationStats objects (imported lazily to avoid cycle)
+    liquidation_stats: Dict[str, object] = field(default_factory=dict)
+    liquidation_stats_updated: float = 0.0
+    liquidation_24h_summary: Optional[Dict] = None
+
+    # Rejected-signal audit trail (for post-mortem analysis)
+    rejected_signals: Deque = field(default_factory=lambda: deque(maxlen=200))
+
     # Status
     is_running: bool = False
     status_message: str = "Idle"
@@ -122,9 +148,22 @@ class AgentState:
     # Log
     log_lines: Deque = field(default_factory=lambda: deque(maxlen=100))
 
+    # Re-entrant lock for thread-safe mutation of positions, trade_history,
+    # daily_pnl, rejected_signals, last_trade_time. Re-entrant so the same
+    # thread can acquire it multiple times (e.g. risk.check_trailing_stops
+    # already holds the lock when it calls internal helpers).
+    # IMPORTANT: Dataclass cannot default to threading.RLock() because deepcopy
+    # would break — use default_factory.
+    _lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
+
     def add_log(self, message: str):
         timestamp = time.strftime("%H:%M:%S")
         self.log_lines.append(f"[{timestamp}] {message}")
+
+    def add_rejected_signal(self, signal: "Signal", reason: str) -> None:
+        """Record a rejected signal for analysis."""
+        with self._lock:
+            self.rejected_signals.append(RejectedSignal(signal=signal, reason=reason))
 
     @property
     def win_rate(self) -> float:

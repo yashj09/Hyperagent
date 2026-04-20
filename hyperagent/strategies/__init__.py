@@ -4,6 +4,7 @@ from strategies.momentum import MomentumStrategy
 from strategies.funding_sniper import FundingSniperStrategy
 from strategies.volatility_breakout import VolatilityBreakoutStrategy
 from strategies.pairs_reversion import PairsReversionStrategy
+from strategies.liquidation_cascade_v2 import LiquidationCascadeV2Strategy
 
 __all__ = [
     "BaseStrategy",
@@ -12,4 +13,5 @@ __all__ = [
     "FundingSniperStrategy",
     "VolatilityBreakoutStrategy",
     "PairsReversionStrategy",
+    "LiquidationCascadeV2Strategy",
 ]
