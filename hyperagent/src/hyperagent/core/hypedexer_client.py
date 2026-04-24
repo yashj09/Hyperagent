@@ -25,7 +25,7 @@ from typing import Dict, List, Optional
 
 import httpx
 
-import hyperagent.config
+from hyperagent import config
 
 logger = logging.getLogger(__name__)
 

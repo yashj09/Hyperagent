@@ -19,7 +19,7 @@ from typing import Optional, Dict, List
 
 from hyperliquid.info import Info
 
-import hyperagent.config
+from hyperagent import config
 from hyperagent.core.state import (
     AgentState,
     Signal,

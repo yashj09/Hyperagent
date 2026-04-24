@@ -1,0 +1,327 @@
+"""CLI onboarding wizard.
+
+Runs before the Textual TUI boots. Asks the user a minimal set of
+questions, validates the agent-wallet pairing against Hyperliquid, then
+writes a `.env` file to the standard config location.
+
+Design notes:
+  * Pure stdlib (`input`, `getpass`, `webbrowser`, `pathlib`). No Textual
+    imports — keeps the wizard crash-proof relative to TUI bugs and lets
+    it run on any terminal, including SSH/WSL where Textual can misbehave.
+  * Ctrl-C / EOF at any step discards everything; next launch starts the
+    wizard fresh. No partial configs.
+  * `hyperagent setup` re-runs the wizard with existing values as defaults.
+"""
+
+from __future__ import annotations
+
+import getpass
+import os
+import sys
+import webbrowser
+from pathlib import Path
+from typing import Dict, Optional
+
+from hyperagent.onboarding.validators import (
+    PairingResult,
+    is_valid_address,
+    is_valid_private_key,
+    verify_agent_pairing,
+)
+from hyperagent.onboarding.logo import print_logo
+
+
+AGENT_APPROVAL_URL_TESTNET = "https://app.hyperliquid-testnet.xyz/API"
+AGENT_APPROVAL_URL_MAINNET = "https://app.hyperliquid.xyz/API"
+
+
+# ---------------------------------------------------------------------------
+# Small styling helpers (ANSI — safe to print on any modern terminal)
+# ---------------------------------------------------------------------------
+
+def _bold(s: str) -> str:
+    return f"\033[1m{s}\033[0m"
+
+
+def _dim(s: str) -> str:
+    return f"\033[2m{s}\033[0m"
+
+
+def _green(s: str) -> str:
+    return f"\033[32m{s}\033[0m"
+
+
+def _red(s: str) -> str:
+    return f"\033[31m{s}\033[0m"
+
+
+def _yellow(s: str) -> str:
+    return f"\033[33m{s}\033[0m"
+
+
+def _prompt(label: str, default: Optional[str] = None) -> str:
+    """input() wrapper that renders a default hint and handles EOF."""
+    suffix = f" [{_dim(default)}]" if default else ""
+    try:
+        raw = input(f"{label}{suffix} > ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise
+    return raw or (default or "")
+
+
+def _yes_no(label: str, default: bool = True) -> bool:
+    hint = "[Y/n]" if default else "[y/N]"
+    while True:
+        try:
+            raw = input(f"{label} {hint} > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise
+        if not raw:
+            return default
+        if raw in ("y", "yes"):
+            return True
+        if raw in ("n", "no"):
+            return False
+        print(_red("  please answer y or n"))
+
+
+# ---------------------------------------------------------------------------
+# Wizard
+# ---------------------------------------------------------------------------
+
+def default_config_path() -> Path:
+    return Path.home() / ".config" / "hyperagent" / ".env"
+
+
+def run_wizard(existing: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Run the wizard and return a config dict ready for save_config().
+
+    `existing` is the current `.env` as a dict (for `hyperagent setup`);
+    its values pre-fill prompt defaults so users can Enter through
+    unchanged fields.
+
+    Raises KeyboardInterrupt on Ctrl-C / EOF — caller decides what to do
+    (main() discards and exits).
+    """
+    existing = existing or {}
+
+    print_logo()
+    print(_dim("Let's get you set up. This takes ~60 seconds.\n"))
+
+    # --- Step 1: Network --------------------------------------------------
+    print(_bold("1) Network"))
+    print("  [1] Testnet  " + _green("(safe, free testnet USDC)"))
+    print("  [2] Mainnet  " + _dim("(disabled in this version)"))
+    while True:
+        choice = _prompt("Select", default="1")
+        if choice == "1":
+            network = "testnet"
+            break
+        if choice == "2":
+            print(_yellow(
+                "  Mainnet is coming soon. For now we only sign on testnet."
+            ))
+            continue
+        print(_red("  please enter 1 or 2"))
+    print()
+
+    # --- Step 2: Reconcile existing positions ----------------------------
+    print(_bold("2) Existing positions"))
+    reconcile = _yes_no(
+        "Do you have open positions on this account you want the agent to adopt?",
+        default=False,
+    )
+    print()
+
+    # --- Step 3: Agent wallet instructions --------------------------------
+    approval_url = (
+        AGENT_APPROVAL_URL_TESTNET if network == "testnet"
+        else AGENT_APPROVAL_URL_MAINNET
+    )
+    print(_bold("3) Agent wallet"))
+    print(
+        "  HyperAgent signs trades with an " + _bold("agent wallet") + " — a\n"
+        "  trade-only key you generate on Hyperliquid. It " + _green("CAN place trades.") + "\n"
+        "  It " + _red("CANNOT withdraw funds") + " from your account. Revocable any time."
+    )
+    print()
+    print("  Steps:")
+    print(f"    1. Open {_bold(approval_url)}")
+    print("    2. Connect your main wallet")
+    print("    3. Click Generate → sign the approveAgent transaction")
+    print("    4. Copy the agent private key shown on screen")
+    print("    5. Return here")
+    print()
+    if _yes_no("Open the page in your browser now?", default=True):
+        try:
+            webbrowser.open(approval_url)
+        except Exception:
+            pass  # silent fallback — URL is already printed
+    print()
+
+    # --- Step 4: Main wallet address -------------------------------------
+    print(_bold("4) Main wallet address"))
+    while True:
+        main_addr = _prompt(
+            "Your main wallet address (0x…)",
+            default=existing.get("HL_MAIN_ADDRESS") or None,
+        )
+        if is_valid_address(main_addr):
+            break
+        print(_red("  not a valid 0x-prefixed 42-char hex address — try again"))
+    print()
+
+    # --- Step 5: Agent private key ---------------------------------------
+    print(_bold("5) Agent wallet private key"))
+    print(_dim("  (input is hidden)"))
+    while True:
+        try:
+            agent_key = getpass.getpass("Paste agent private key (0x…) > ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            raise
+        if not agent_key and existing.get("HL_AGENT_PRIVATE_KEY"):
+            agent_key = existing["HL_AGENT_PRIVATE_KEY"]
+            print(_dim("  keeping existing agent key"))
+            break
+        if is_valid_private_key(agent_key):
+            break
+        print(_red("  not a valid 0x-prefixed 64-char hex key — try again"))
+    print()
+
+    # --- Step 6: Validate pairing ----------------------------------------
+    print(_bold("6) Verifying"))
+    print(_dim("  Checking that Hyperliquid can see your main address…"))
+    result: PairingResult = verify_agent_pairing(
+        agent_key, main_addr, testnet=(network == "testnet")
+    )
+    if not result.ok:
+        print(_red(f"  ✗ {result.error}"))
+        print()
+        print("Nothing was saved. Check that you approved the agent on the")
+        print(f"right network ({network}) and try again.")
+        raise KeyboardInterrupt
+    print(_green("  ✓ main address reachable on " + network))
+    print(_dim(
+        "  (Final proof-of-approval happens on your first trade — if the"
+        "\n  agent wasn't approved correctly, the TUI will show a clear error.)"
+    ))
+    print()
+
+    # --- Step 7a: AI reasoning -------------------------------------------
+    print(_bold("7) AI trade explanations (optional)"))
+    cfg: Dict[str, str] = {}
+    if _yes_no(
+        "Enable AI explanations via AWS Bedrock (Claude Haiku)?",
+        default=bool(existing.get("AWS_ACCESS_KEY_ID")),
+    ):
+        cfg["AWS_ACCESS_KEY_ID"] = _prompt(
+            "  AWS_ACCESS_KEY_ID",
+            default=existing.get("AWS_ACCESS_KEY_ID") or None,
+        )
+        cfg["AWS_SECRET_ACCESS_KEY"] = getpass.getpass(
+            "  AWS_SECRET_ACCESS_KEY (hidden) > "
+        ).strip() or existing.get("AWS_SECRET_ACCESS_KEY", "")
+        cfg["AWS_DEFAULT_REGION"] = _prompt(
+            "  AWS_DEFAULT_REGION",
+            default=existing.get("AWS_DEFAULT_REGION") or "us-east-1",
+        )
+    print()
+
+    # --- Step 7b: HypeDexer ----------------------------------------------
+    print(_bold("8) Liquidation Cascade v2 (optional)"))
+    if _yes_no(
+        "Enable the Liquidation Cascade v2 strategy (needs HypeDexer API key)?",
+        default=bool(existing.get("HYPEDEXER_API_KEY")),
+    ):
+        cfg["HYPEDEXER_API_KEY"] = getpass.getpass(
+            "  HYPEDEXER_API_KEY (hidden) > "
+        ).strip() or existing.get("HYPEDEXER_API_KEY", "")
+    print()
+
+    # --- Step 8: Summary + confirm ---------------------------------------
+    cfg["HL_NETWORK"] = network
+    cfg["HL_MAIN_ADDRESS"] = main_addr
+    cfg["HL_AGENT_PRIVATE_KEY"] = agent_key
+    cfg["HL_RECONCILE_ON_BOOT"] = "1" if reconcile else "0"
+
+    print(_bold("9) Review"))
+    print(f"  Network:     {network}")
+    print(f"  Main addr:   {main_addr[:6]}…{main_addr[-4:]}")
+    print(f"  Agent key:   0x…{agent_key[-4:]}  {_dim('(hidden, saved)')}")
+    print(f"  AI:          {'enabled' if cfg.get('AWS_ACCESS_KEY_ID') else 'disabled'}")
+    print(f"  HypeDexer:   {'enabled' if cfg.get('HYPEDEXER_API_KEY') else 'disabled'}")
+    print(f"  Reconcile:   {'yes' if reconcile else 'no'}")
+    print(f"  Config file: {default_config_path()}")
+    print()
+
+    if not _yes_no("Save and launch?", default=True):
+        print(_yellow("Discarded. Run `hyperagent` again to restart the wizard."))
+        raise KeyboardInterrupt
+
+    return cfg
+
+
+# ---------------------------------------------------------------------------
+# Persistence
+# ---------------------------------------------------------------------------
+
+def save_config(cfg: Dict[str, str], path: Optional[Path] = None) -> Path:
+    """Write the wizard's dict to a .env file with chmod 600.
+
+    Keys are written in a stable order for readability. Values are written
+    raw (no quoting) — they're all hex strings, ISO codes, or enum-like
+    flags, none of which need shell escaping.
+    """
+    path = path or default_config_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    order = [
+        "HL_NETWORK",
+        "HL_MAIN_ADDRESS",
+        "HL_AGENT_PRIVATE_KEY",
+        "HL_RECONCILE_ON_BOOT",
+        "AWS_ACCESS_KEY_ID",
+        "AWS_SECRET_ACCESS_KEY",
+        "AWS_DEFAULT_REGION",
+        "HYPEDEXER_API_KEY",
+    ]
+
+    lines = [
+        "# HyperAgent config — generated by `hyperagent setup`",
+        "# TESTNET AGENT WALLET ONLY. Never paste a mainnet or main-wallet key here.",
+        "",
+    ]
+    for key in order:
+        if key in cfg and cfg[key] != "":
+            lines.append(f"{key}={cfg[key]}")
+
+    path.write_text("\n".join(lines) + "\n")
+    try:
+        path.chmod(0o600)
+    except OSError:
+        # Windows / weird filesystems — best effort. Not a hard failure.
+        pass
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Helper: parse an existing .env into a dict (for `hyperagent setup`)
+# ---------------------------------------------------------------------------
+
+def load_existing(path: Path) -> Dict[str, str]:
+    """Minimal .env parser — we only need KEY=VALUE on uncommented lines."""
+    out: Dict[str, str] = {}
+    if not path.is_file():
+        return out
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            continue
+        k, v = line.split("=", 1)
+        out[k.strip()] = v.strip()
+    return out

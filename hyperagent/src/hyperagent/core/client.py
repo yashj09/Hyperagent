@@ -20,7 +20,7 @@ from hyperliquid.exchange import Exchange
 from hyperliquid.utils import constants as hl_constants
 from eth_account import Account
 
-import hyperagent.config
+from hyperagent import config
 
 logger = logging.getLogger(__name__)
 
@@ -68,19 +68,28 @@ class HyperLiquidClient:
         self.exchange: Optional[Exchange] = None
         self.address: Optional[str] = None
 
-        key = private_key or config.TESTNET_PRIVATE_KEY
+        key = private_key or config.HL_AGENT_PRIVATE_KEY
         if key:
             account = Account.from_key(key)
-            self.address = account.address
+            agent_addr = account.address
+            # Agent-wallet mode: agent key signs, trades target the main
+            # wallet via account_address. If HL_MAIN_ADDRESS is absent we
+            # fall back to single-key mode (the signer is also the master),
+            # covering legacy TESTNET_PRIVATE_KEY setups that haven't migrated.
+            main_addr = config.HL_MAIN_ADDRESS or agent_addr
+            self.address = main_addr
             base_url = (
                 hl_constants.TESTNET_API_URL if testnet
                 else hl_constants.MAINNET_API_URL
             )
-            self.exchange = Exchange(account, base_url)
+            self.exchange = Exchange(
+                account, base_url, account_address=main_addr
+            )
+            mode = "agent->main" if config.HL_MAIN_ADDRESS else "single-key"
             logger.info(
-                "Exchange client initialised on %s for %s",
+                "Exchange client initialised on %s (%s): signer=%s main=%s",
                 "testnet" if testnet else "mainnet",
-                self.address,
+                mode, agent_addr, main_addr,
             )
 
         # Cache the universe metadata so we can resolve coin -> asset index

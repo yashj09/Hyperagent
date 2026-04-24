@@ -12,7 +12,7 @@ import logging
 import time
 from typing import Dict, List, Optional
 
-import hyperagent.config
+from hyperagent import config
 from hyperagent.core.state import AgentState, ActivePosition, Signal, TradeRecord
 from hyperagent.core.client import HyperLiquidClient
 

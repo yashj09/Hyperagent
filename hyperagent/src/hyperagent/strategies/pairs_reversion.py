@@ -23,7 +23,7 @@ import numpy as np
 import pandas as pd
 from hyperliquid.info import Info
 
-import hyperagent.config
+from hyperagent import config
 from hyperagent.core.state import AgentState, Signal
 from hyperagent.strategies.base import BaseStrategy
 

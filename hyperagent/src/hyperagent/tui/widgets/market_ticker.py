@@ -8,7 +8,7 @@ colored percentage changes (green for positive, red for negative).
 from textual.widgets import Static
 from rich.text import Text
 
-import hyperagent.config
+from hyperagent import config
 
 
 class MarketTicker(Static):

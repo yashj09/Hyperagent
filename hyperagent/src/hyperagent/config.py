@@ -1,12 +1,63 @@
+import logging
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv()
+logger = logging.getLogger(__name__)
+
+
+def locate_env_file() -> Path | None:
+    """Find the HyperAgent .env file.
+
+    Lookup order (first match wins):
+      1. $HYPERAGENT_ENV_FILE
+      2. ./.env (developer / repo-clone flow)
+      3. ~/.config/hyperagent/.env (standard user install)
+      4. ~/.hyperagent/.env (Windows / legacy fallback)
+    """
+    override = os.environ.get("HYPERAGENT_ENV_FILE")
+    if override:
+        p = Path(override).expanduser()
+        return p if p.is_file() else None
+
+    candidates = [
+        Path.cwd() / ".env",
+        Path.home() / ".config" / "hyperagent" / ".env",
+        Path.home() / ".hyperagent" / ".env",
+    ]
+    for p in candidates:
+        if p.is_file():
+            return p
+    return None
+
+
+ENV_FILE_PATH: Path | None = locate_env_file()
+if ENV_FILE_PATH is not None:
+    load_dotenv(ENV_FILE_PATH)
 
 MAINNET_API_URL = "https://api.hyperliquid.xyz"
 TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz"
 
-TESTNET_PRIVATE_KEY = os.getenv("TESTNET_PRIVATE_KEY", "")
+# Agent wallet (see README "Safety"): a trade-only, revocable key the user
+# approves on app.hyperliquid-testnet.xyz/API. It cannot withdraw funds —
+# that permission is exchange-enforced, not something we implement here.
+HL_AGENT_PRIVATE_KEY = os.getenv("HL_AGENT_PRIVATE_KEY", "")
+HL_MAIN_ADDRESS = os.getenv("HL_MAIN_ADDRESS", "")
+
+# Legacy TESTNET_PRIVATE_KEY: pre-agent-wallet users had a master key here.
+# One-version fallback so existing .env files don't break on upgrade.
+_legacy_testnet_key = os.getenv("TESTNET_PRIVATE_KEY", "")
+if _legacy_testnet_key and not HL_AGENT_PRIVATE_KEY:
+    logger.warning(
+        "TESTNET_PRIVATE_KEY is deprecated. Rename it to HL_AGENT_PRIVATE_KEY "
+        "and set HL_MAIN_ADDRESS to your main wallet address. Run "
+        "`hyperagent setup` to reconfigure with an agent wallet."
+    )
+    HL_AGENT_PRIVATE_KEY = _legacy_testnet_key
+
+# Reconcile-on-boot flag: set by wizard step 2 when user opts in. Cleared
+# by app.py after the reconcile modal runs once.
+HL_RECONCILE_ON_BOOT = os.getenv("HL_RECONCILE_ON_BOOT", "") == "1"
 
 MONITORED_ASSETS = ["BTC", "ETH", "SOL", "DOGE", "XRP", "SUI", "AVAX", "LINK"]
 

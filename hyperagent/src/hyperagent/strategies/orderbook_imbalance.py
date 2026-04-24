@@ -10,7 +10,7 @@ import asyncio
 import logging
 from typing import Optional, Dict
 
-import hyperagent.config
+from hyperagent import config
 from hyperagent.core.state import AgentState, Signal
 from hyperagent.strategies.base import BaseStrategy
 

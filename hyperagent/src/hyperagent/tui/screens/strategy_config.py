@@ -28,7 +28,7 @@ from textual.message import Message
 from hyperagent.core.state import AgentState
 from hyperagent.tui.param_schema import ParamSpec, check_invariants, get_specs_for, get_spec_by_key
 from hyperagent.tui.screens.edit_param_modal import EditParamModal
-import hyperagent.config
+from hyperagent import config
 
 
 STRATEGY_DESCRIPTIONS = {

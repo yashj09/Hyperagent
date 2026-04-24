@@ -21,7 +21,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Deque, Dict, List, Optional
 
-import hyperagent.config
+from hyperagent import config
 from hyperagent.core.hypedexer_client import HypeDexerClient, LiquidationEvent
 
 logger = logging.getLogger(__name__)

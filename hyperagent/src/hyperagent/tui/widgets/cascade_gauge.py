@@ -13,7 +13,7 @@ from textual.widgets import Static
 from rich.text import Text
 
 from hyperagent.core.state import AgentState
-import hyperagent.config
+from hyperagent import config
 
 
 class CascadeGauge(Static):

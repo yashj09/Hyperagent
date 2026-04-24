@@ -17,7 +17,7 @@ from textual.widgets import Header, Footer, TabbedContent, TabPane
 from textual.binding import Binding
 from textual import work
 
-import hyperagent.config
+from hyperagent import config
 from hyperagent.core.state import AgentState, Signal, ActivePosition
 from hyperagent.core.client import HyperLiquidClient
 from hyperagent.core.risk import RiskManager

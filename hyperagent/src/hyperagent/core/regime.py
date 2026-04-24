@@ -17,7 +17,7 @@ import pandas as pd
 import ta
 from hyperliquid.info import Info
 
-import hyperagent.config
+from hyperagent import config
 from hyperagent.core.state import AgentState
 
 logger = logging.getLogger(__name__)

@@ -11,7 +11,7 @@ from typing import Dict, List
 
 from hyperliquid.info import Info
 
-import hyperagent.config
+from hyperagent import config
 from hyperagent.core.state import LiquidationLevel, LiquidationCluster
 
 logger = logging.getLogger(__name__)

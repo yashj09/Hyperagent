@@ -34,7 +34,7 @@ from typing import Dict, Optional
 
 from hyperliquid.info import Info
 
-import hyperagent.config
+from hyperagent import config
 from hyperagent.core.liquidation_aggregator import CoinLiquidationStats
 from hyperagent.core.state import AgentState, Signal
 from hyperagent.strategies.base import BaseStrategy
