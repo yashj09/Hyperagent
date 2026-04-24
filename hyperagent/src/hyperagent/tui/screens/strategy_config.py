@@ -423,5 +423,5 @@ def _strategy_only_specs(strategy: str):
     strategy portion so we can render a visual divider between the two
     sections in the table.
     """
-    from tui.param_schema import STRATEGY_SPECS
+    from hyperagent.tui.param_schema import STRATEGY_SPECS
     return STRATEGY_SPECS.get(strategy, [])

@@ -1066,9 +1066,9 @@ def _run_setup_flow(force: bool = False) -> None:
 
     try:
         cfg = run_wizard(existing=existing)
-    except KeyboardInterrupt:
-        # User cancelled — nothing saved. Re-raise as SystemExit so we
-        # don't drop into the TUI with a half-configured state.
+    except (KeyboardInterrupt, EOFError):
+        # User cancelled — nothing saved. Exit cleanly so we don't drop
+        # into the TUI with a half-configured state.
         print("\nSetup cancelled.")
         raise SystemExit(1)
 

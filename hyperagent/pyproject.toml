@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "hyperagent"
+name = "hyperliquidagent"
 dynamic = ["version"]
 description = "Autonomous trading terminal for Hyperliquid (testnet)"
 readme = "README.md"

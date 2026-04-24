@@ -1,10 +1,37 @@
 # HyperAgent
 
-**Autonomous Trading Terminal for Hyperliquid**
+[![PyPI version](https://img.shields.io/pypi/v/hyperliquidagent.svg)](https://pypi.org/project/hyperliquidagent/)
+[![Python](https://img.shields.io/pypi/pyversions/hyperliquidagent.svg)](https://pypi.org/project/hyperliquidagent/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-HyperAgent is an interactive terminal-based trading agent that watches the market in real-time, detects trading opportunities using 5 different strategies, executes trades autonomously, manages risk with trailing stop-losses, and explains every decision with AI — all from a single terminal interface.
+**Autonomous Trading Terminal for Hyperliquid (testnet)**
+
+HyperAgent is an interactive terminal-based trading agent that watches the market in real-time, detects trading opportunities using 6 different strategies, executes trades autonomously, manages risk with trailing stop-losses, and explains every decision with AI — all from a single terminal interface.
 
 You pick a strategy. You hit Start. It trades by itself.
+
+## Install
+
+```bash
+pipx install hyperliquidagent
+hyperagent
+```
+
+That's it. First run launches a short setup wizard (asks for your main wallet address and an agent-wallet private key — see [Safety](#safety) below), then drops you into the TUI.
+
+Upgrade any time:
+
+```bash
+pipx upgrade hyperliquidagent
+```
+
+Don't have `pipx`? [Install it in 30 seconds](https://pipx.pypa.io/stable/installation/).
+
+## Safety
+
+- **Testnet only.** This version signs only on Hyperliquid testnet. It cannot touch your mainnet funds.
+- **Agent-wallet only — you never paste your main private key.** HyperAgent uses Hyperliquid's native "agent wallet" feature. You generate an agent key on [app.hyperliquid-testnet.xyz/API](https://app.hyperliquid-testnet.xyz/API), sign one approval transaction with your main wallet, and paste only the agent key into the wizard. Hyperliquid's exchange enforces that agent keys **cannot withdraw funds** — only place and cancel trades.
+- **Revocable any time.** If you ever want to cut off the bot, click "Revoke" on the same Hyperliquid page. No key rotation, no emails, one click.
 
 ---
 
@@ -73,31 +100,36 @@ Every second, HyperAgent:
 
 ---
 
-## Quick Start
+## Getting started (full walkthrough)
+
+1. **Install**: `pipx install hyperliquidagent`
+2. **Get testnet USDC**: go to [app.hyperliquid-testnet.xyz](https://app.hyperliquid-testnet.xyz), connect your wallet, hit the faucet.
+3. **Generate an agent wallet**: go to [app.hyperliquid-testnet.xyz/API](https://app.hyperliquid-testnet.xyz/API), click **Generate**, sign the `approveAgent` transaction with your main wallet, copy the agent private key shown on screen.
+4. **Run** `hyperagent`. The wizard asks for:
+   - Network (testnet only in this version)
+   - Your main wallet address (public, `0x…`)
+   - The agent private key you just copied (hidden input)
+   - Optional AWS Bedrock creds for AI explanations
+   - Optional HypeDexer key for the Liquidation Cascade v2 strategy
+5. **Trade**: pick a strategy, hit Start.
+
+Config is saved to `~/.config/hyperagent/.env` with `chmod 600`.
+
+To reconfigure later (rotate the agent key, add AWS creds, etc.):
 
 ```bash
-cd hyperagent
-
-# Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Configure
-cp .env.example .env
-# Edit .env — add your Hyperliquid testnet private key
-
-# Run
-python3 app.py
+hyperagent setup
 ```
 
-### Get testnet USDC
-1. Go to https://app.hyperliquid-testnet.xyz
-2. Connect wallet
-3. Get testnet USDC from faucet
-4. Export private key → paste in `.env` as `TESTNET_PRIVATE_KEY`
+### Run from source (contributors)
+
+```bash
+git clone https://github.com/yashj09/Elsa-s-Agentic-Hyperthon
+cd hyperagent
+python3 -m venv venv && source venv/bin/activate
+pip install -e .
+hyperagent
+```
 
 ---
 
@@ -108,7 +140,9 @@ python3 app.py
 | `d` | Dashboard |
 | `s` | Strategy Config |
 | `j` | Trade Journal |
+| `n` | Analytics |
 | `a` | Toggle AI |
+| `k` | Kill all positions |
 | `q` | Quit |
 
 ---
@@ -117,10 +151,13 @@ python3 app.py
 
 | Variable | Required | Description |
 |----------|----------|-------------|
-| `TESTNET_PRIVATE_KEY` | Yes | Hyperliquid testnet wallet private key (0x...) |
+| `HL_MAIN_ADDRESS` | Yes | Your main wallet address (0x…, public) |
+| `HL_AGENT_PRIVATE_KEY` | Yes | Agent wallet private key from Hyperliquid — **never your main key** |
 | `AWS_ACCESS_KEY_ID` | For AI | AWS credentials for Bedrock |
 | `AWS_SECRET_ACCESS_KEY` | For AI | AWS secret key |
 | `AWS_DEFAULT_REGION` | For AI | AWS region (default: us-east-1) |
+| `HYPEDEXER_API_KEY` | For Cascade v2 | Required only for the Liquidation Cascade v2 strategy |
+| `HYPERAGENT_ENV_FILE` | No | Override config file location |
 
 ---
 
