@@ -38,8 +38,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/yashj09/Elsa-s-Agentic-Hyperthon"
-Issues = "https://github.com/yashj09/Elsa-s-Agentic-Hyperthon/issues"
+Homepage = "https://github.com/yashj09/Hyperagent"
+Issues = "https://github.com/yashj09/Hyperagent/issues"
 
 [project.scripts]
 hyperagent = "hyperagent.app:main"

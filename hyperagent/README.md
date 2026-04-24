@@ -124,7 +124,7 @@ hyperagent setup
 ### Run from source (contributors)
 
 ```bash
-git clone https://github.com/yashj09/Elsa-s-Agentic-Hyperthon
+git clone https://github.com/yashj09/Hyperagent
 cd hyperagent
 python3 -m venv venv && source venv/bin/activate
 pip install -e .
