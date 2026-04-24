@@ -1,9 +1,3 @@
-textual>=8.2.0
-textual-plotext
-hyperliquid-python-sdk>=0.23.0
-anthropic>=0.28.0
-boto3
-numpy
-ta
-python-dotenv
-eth-account
+# Install target for contributors cloning the repo.
+# Dependencies are managed in pyproject.toml.
+-e .

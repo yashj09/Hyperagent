@@ -1,0 +1,59 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "hyperagent"
+dynamic = ["version"]
+description = "Autonomous trading terminal for Hyperliquid (testnet)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Yash Jain" },
+]
+keywords = ["hyperliquid", "trading", "textual", "tui", "crypto", "defi"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Financial and Insurance Industry",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "textual>=8.2.0",
+    "textual-plotext",
+    "hyperliquid-python-sdk>=0.23.0",
+    "anthropic>=0.28.0",
+    "boto3",
+    "numpy",
+    "ta",
+    "python-dotenv",
+    "eth-account",
+]
+
+[project.urls]
+Homepage = "https://github.com/yashj09/Elsa-s-Agentic-Hyperthon"
+Issues = "https://github.com/yashj09/Elsa-s-Agentic-Hyperthon/issues"
+
+[project.scripts]
+hyperagent = "hyperagent.app:main"
+
+[tool.hatch.version]
+path = "src/hyperagent/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hyperagent"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/hyperagent",
+    "README.md",
+    "LICENSE",
+    "pyproject.toml",
+]

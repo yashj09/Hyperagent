@@ -141,11 +141,18 @@ class HyperAgentApp(App):
             config.DASHBOARD_REFRESH_RATE, self._refresh_display
         )
 
-        # Startup reconciliation — runs AFTER price feed initializes so we
-        # have prices for the modal display. state.is_running is False on
-        # boot so the strategy loop won't trade while the modal is up.
-        # User must click "Start Strategy" after resolving the modal.
-        self.run_reconcile_on_startup()
+        self.state.add_log(
+            "[SAFETY] Testnet mode locked — mainnet trading is disabled."
+        )
+
+        # Startup reconciliation only runs when the user opted in via the
+        # wizard (step 2). Previously this fired on every boot, which was
+        # noisy and surprised users who'd already reconciled. The flag is
+        # one-shot — we clear it from ~/.config/hyperagent/.env below once
+        # the reconcile worker finishes, so the next boot stays quiet.
+        if config.HL_RECONCILE_ON_BOOT:
+            self.run_reconcile_on_startup()
+            self._clear_reconcile_flag()
 
     # ------------------------------------------------------------------
     # Actions
@@ -673,6 +680,32 @@ class HyperAgentApp(App):
 
             time.sleep(config.REGIME_UPDATE_INTERVAL)
 
+    def _clear_reconcile_flag(self) -> None:
+        """Flip HL_RECONCILE_ON_BOOT=0 in the user's .env after one fire.
+
+        The wizard sets this to 1 when the user opts in; we set it back to
+        0 so subsequent boots don't re-prompt. Best-effort — if the .env
+        isn't writable we just log and move on.
+        """
+        path = config.ENV_FILE_PATH
+        if path is None or not path.is_file():
+            return
+        try:
+            lines = path.read_text().splitlines()
+            new_lines = []
+            found = False
+            for line in lines:
+                if line.startswith("HL_RECONCILE_ON_BOOT="):
+                    new_lines.append("HL_RECONCILE_ON_BOOT=0")
+                    found = True
+                else:
+                    new_lines.append(line)
+            if not found:
+                new_lines.append("HL_RECONCILE_ON_BOOT=0")
+            path.write_text("\n".join(new_lines) + "\n")
+        except OSError as exc:
+            logger.warning("Could not clear reconcile flag: %s", exc)
+
     @work(exclusive=True, thread=True, group="reconcile")
     def run_reconcile_on_startup(self):
         """One-shot reconciliation: detect HL positions we didn't open.
@@ -1004,10 +1037,80 @@ class HyperAgentApp(App):
 # Entry point
 # ----------------------------------------------------------------------
 
-if __name__ == "__main__":
+def _config_is_complete() -> bool:
+    """True iff config has the minimum required fields for live trading.
+
+    We treat "no agent key" as "run the wizard". HL_MAIN_ADDRESS is
+    recommended but optional — single-key mode still works for legacy
+    setups (see core/client.py).
+    """
+    return bool(config.HL_AGENT_PRIVATE_KEY)
+
+
+def _run_setup_flow(force: bool = False) -> None:
+    """Launch the CLI wizard. Writes ~/.config/hyperagent/.env on success.
+
+    force=True → always run (used by `hyperagent setup`), pre-filling with
+    existing values.
+    force=False → run only when config is incomplete.
+    """
+    from hyperagent.onboarding.wizard import (
+        run_wizard, save_config, load_existing, default_config_path,
+    )
+
+    if not force and _config_is_complete():
+        return
+
+    existing_path = default_config_path()
+    existing = load_existing(existing_path) if force else {}
+
+    try:
+        cfg = run_wizard(existing=existing)
+    except KeyboardInterrupt:
+        # User cancelled — nothing saved. Re-raise as SystemExit so we
+        # don't drop into the TUI with a half-configured state.
+        print("\nSetup cancelled.")
+        raise SystemExit(1)
+
+    path = save_config(cfg, existing_path)
+    print(f"\nSaved to {path} (chmod 600).")
+
+    # Reload env vars into the current process so the TUI sees the new
+    # config without requiring a restart.
+    for k, v in cfg.items():
+        import os as _os
+        _os.environ[k] = v
+    # Reload config module so its os.getenv(...) calls see the new values.
+    import importlib
+    importlib.reload(config)
+
+
+def main() -> None:
+    """Console-script entry point (`hyperagent` command)."""
+    import sys
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
+
+    # Subcommand dispatch (bare-bones — one subcommand, no argparse needed).
+    if len(sys.argv) > 1 and sys.argv[1] == "setup":
+        _run_setup_flow(force=True)
+        # After a manual `setup` run, fall through and launch the TUI so
+        # the user doesn't have to type `hyperagent` a second time.
+    else:
+        _run_setup_flow(force=False)
+
+    if not _config_is_complete():
+        # Wizard ran but config still missing — should only happen if the
+        # user skipped it somehow. Bail clearly.
+        print("No agent wallet configured. Run `hyperagent setup` to set one up.")
+        raise SystemExit(1)
+
     app = HyperAgentApp()
     app.run()
+
+
+if __name__ == "__main__":
+    main()
