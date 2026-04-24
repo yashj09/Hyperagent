@@ -9,6 +9,10 @@ permissions:
   contents: write
   id-token: write
 
+defaults:
+  run:
+    working-directory: hyperagent
+
 jobs:
   build-and-publish:
     name: Build and publish
@@ -34,9 +38,11 @@ jobs:
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: hyperagent/dist/
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*
+          files: hyperagent/dist/*
           generate_release_notes: true
