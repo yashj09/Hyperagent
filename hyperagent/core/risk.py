@@ -156,49 +156,129 @@ class RiskManager:
                                 f"(pair_id={pos.pair_id[:20]})"
                             )
 
-        # Release lock for network I/O. Re-acquire only to mutate state.
+        # Release lock for network I/O. _close_and_record handles the
+        # per-position network call + state mutation + cancel cleanup.
         for pos in positions_to_close:
-            try:
-                result = await self.client.close_position(pos.coin)
-                exit_price = result.executed_price if result.success else pos.current_price
+            msg = await self._close_and_record(pos, tag="RISK")
+            messages.append(msg)
 
-                # Build trade record
-                pnl = self._calculate_pnl(pos, exit_price)
-                record = TradeRecord(
-                    coin=pos.coin,
-                    side=pos.side,
-                    strategy=pos.signal.strategy,
-                    entry_price=pos.entry_price,
-                    exit_price=exit_price,
-                    size=pos.size,
-                    pnl=pnl,
-                    signal=pos.signal,
-                    entry_time=pos.entry_time,
-                    exit_time=time.time(),
-                    ai_reasoning=pos.signal.ai_reasoning,
-                )
+        return messages
 
-                with self.state._lock:
-                    self.state.trade_history.append(record)
-                    self.state.total_trades += 1
-                    if pnl > 0:
-                        self.state.winning_trades += 1
-                    self.state.daily_pnl += pnl
-                    if pos in self.state.positions:
-                        self.state.positions.remove(pos)
+    # ------------------------------------------------------------------
+    # Shared close path — used by check_trailing_stops AND force_close
+    # ------------------------------------------------------------------
 
-                # Cancel remaining native orders for this coin (outside lock).
-                await self.client.cancel_all_orders(pos.coin)
+    async def _close_and_record(self, pos: ActivePosition, tag: str = "RISK") -> str:
+        """Close one position, record the trade, cancel leftover native orders.
 
-                messages.append(
-                    f"[RISK] Closed {pos.coin} {pos.side.upper()} — "
-                    f"PnL: ${pnl:+.2f}"
-                )
-            except Exception as exc:
-                messages.append(
-                    f"[RISK] ERROR closing {pos.coin}: {exc}"
-                )
-                logger.exception("Failed to close position %s", pos.coin)
+        Extracted from check_trailing_stops so user-initiated closes (via the
+        kill switch) follow the exact same pattern: network call outside the
+        lock, state mutations inside, orders cancelled last. Returns a
+        single log message describing the outcome.
+
+        `tag` is the log prefix — [RISK] for stop-driven closes, [KILL] for
+        user-initiated. Anything else for future flows (e.g. [RECONCILE]).
+        """
+        try:
+            result = await self.client.close_position(pos.coin)
+            exit_price = result.executed_price if result.success else pos.current_price
+
+            pnl = self._calculate_pnl(pos, exit_price)
+            record = TradeRecord(
+                coin=pos.coin,
+                side=pos.side,
+                strategy=pos.signal.strategy,
+                entry_price=pos.entry_price,
+                exit_price=exit_price,
+                size=pos.size,
+                pnl=pnl,
+                signal=pos.signal,
+                entry_time=pos.entry_time,
+                exit_time=time.time(),
+                ai_reasoning=pos.signal.ai_reasoning,
+            )
+
+            with self.state._lock:
+                self.state.trade_history.append(record)
+                self.state.total_trades += 1
+                if pnl > 0:
+                    self.state.winning_trades += 1
+                self.state.daily_pnl += pnl
+                if pos in self.state.positions:
+                    self.state.positions.remove(pos)
+
+            # Cancel leftover trigger orders (TP/SL) outside the lock — this
+            # is a network call and can fail without affecting state.
+            await self.client.cancel_all_orders(pos.coin)
+
+            return (
+                f"[{tag}] Closed {pos.coin} {pos.side.upper()} — "
+                f"PnL: ${pnl:+.2f}"
+            )
+        except Exception as exc:
+            logger.exception("Failed to close position %s", pos.coin)
+            return f"[{tag}] ERROR closing {pos.coin}: {exc}"
+
+    async def force_close(
+        self, coins: Optional[List[str]] = None
+    ) -> List[str]:
+        """User-initiated close of positions.
+
+        coins=None  -> flatten every open position
+        coins=[...] -> close only positions for those coins (plus any
+                       pair siblings — we never leave a pair half-open)
+
+        Returns a list of log messages (same shape as check_trailing_stops)
+        so callers can pipe them into state.add_log.
+
+        Does NOT stop the strategy loop — the user must click Stop on the
+        Strategy tab if they want to block further entries. This matches
+        the locked-in decision: "Positions only".
+        """
+        messages: List[str] = []
+        positions_to_close: List[ActivePosition] = []
+
+        # Build close list under lock. Same pair-expansion pattern used by
+        # check_trailing_stops — if we close one leg of a pair, the sibling
+        # follows automatically so the hedge never ends up naked.
+        with self.state._lock:
+            for pos in list(self.state.positions):
+                if coins is None or pos.coin in coins:
+                    positions_to_close.append(pos)
+
+            if positions_to_close:
+                pair_ids_closing = {
+                    p.pair_id for p in positions_to_close if p.pair_id
+                }
+                if pair_ids_closing:
+                    for pos in list(self.state.positions):
+                        if pos in positions_to_close:
+                            continue
+                        if pos.pair_id and pos.pair_id in pair_ids_closing:
+                            positions_to_close.append(pos)
+                            messages.append(
+                                f"[KILL] Dragging pair sibling {pos.coin} "
+                                f"{pos.side.upper()} (pair_id={pos.pair_id[:20]})"
+                            )
+
+        if not positions_to_close:
+            return [
+                "[KILL] No positions to close"
+                if coins is None
+                else f"[KILL] No matching positions for {coins}"
+            ]
+
+        # Announce before network work so users see immediate feedback even
+        # if the close takes a few seconds round-trip.
+        messages.insert(
+            0,
+            f"[KILL] Force-closing {len(positions_to_close)} position"
+            f"{'s' if len(positions_to_close) != 1 else ''}"
+            f"{(' — coins: ' + ','.join(sorted({p.coin for p in positions_to_close}))) if coins else ''}",
+        )
+
+        for pos in positions_to_close:
+            messages.append(await self._close_and_record(pos, tag="KILL"))
 
         return messages
 

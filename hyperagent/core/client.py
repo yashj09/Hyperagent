@@ -48,12 +48,21 @@ class HyperLiquidClient:
 
     def __init__(self, private_key: str = "", testnet: bool = True):
         # ----- Mainnet Info (read-only, public) -----
+        # The HL SDK's Info() constructor makes a blocking spotMeta HTTP
+        # call on init. If DNS/network is flaky at app launch, this used
+        # to raise and crash the whole app before workers could start.
+        # Now we retry a few times with backoff, and if still failing,
+        # log clearly and let the app boot anyway — background workers
+        # will recover once the network returns (get_prices/etc. already
+        # handle ConnectionError in their own loops).
         import requests
         session = requests.Session()
         adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20)
         session.mount("https://", adapter)
-        self.info = Info(hl_constants.MAINNET_API_URL, skip_ws=True)
-        self.info.session = session
+
+        self.info = self._init_info_with_retries(
+            hl_constants.MAINNET_API_URL, session, max_retries=3
+        )
 
         # ----- Testnet Exchange (trading) -----
         self.exchange: Optional[Exchange] = None
@@ -76,6 +85,60 @@ class HyperLiquidClient:
 
         # Cache the universe metadata so we can resolve coin -> asset index
         self._meta: Optional[dict] = None
+
+    # ------------------------------------------------------------------
+    # Resilient Info construction
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _init_info_with_retries(url: str, session, max_retries: int = 3):
+        """Construct Info() with retries for transient DNS/network failures.
+
+        The HL SDK's Info() constructor calls spotMeta() synchronously at
+        init time. A single DNS hiccup (macOS mDNSResponder flake, Wi-Fi
+        transition) would previously kill the whole app. Now we retry,
+        and if everything fails, return a half-constructed Info whose
+        session points at the right URL — subsequent calls will retry
+        on their own and recover when the network returns.
+        """
+        import time as _t
+        last_exc: Optional[Exception] = None
+        for attempt in range(max_retries):
+            try:
+                info = Info(url, skip_ws=True)
+                info.session = session
+                return info
+            except Exception as exc:
+                last_exc = exc
+                wait = 2 ** attempt  # 1s, 2s, 4s
+                logger.warning(
+                    "Info() init attempt %d/%d failed: %s — retrying in %ds",
+                    attempt + 1, max_retries, exc, wait,
+                )
+                _t.sleep(wait)
+
+        # All retries failed. Build a minimal Info-like object that exposes
+        # a .session and .base_url so callers can still try — they'll fail
+        # the same way on their first call but won't crash at construction.
+        logger.error(
+            "Info() init failed after %d retries (%s). Continuing in "
+            "degraded mode — network calls will retry individually.",
+            max_retries, last_exc,
+        )
+        # Create a stub Info that DOESN'T call spot_meta on construct.
+        # We do this by constructing without calling __init__, then
+        # patching the bare minimum attributes the SDK's methods need.
+        stub = Info.__new__(Info)
+        stub.base_url = url
+        stub.session = session
+        stub.session.headers.update({"Content-Type": "application/json"})
+        # HL SDK methods read .coin_to_asset, .name_to_coin, etc. from
+        # spot_meta results. If those aren't populated, each method call
+        # will try to populate them — which will then succeed when the
+        # network is back. If the user calls a method that references
+        # .name_to_coin before the network recovers, they get a clear
+        # AttributeError which the caller's try/except will handle.
+        return stub
 
     # ------------------------------------------------------------------
     # Price / size formatting
@@ -117,30 +180,93 @@ class HyperLiquidClient:
     # ------------------------------------------------------------------
     # Market data (read via mainnet Info)
     # ------------------------------------------------------------------
+    #
+    # All read methods absorb 429 (rate limit) errors at this layer and
+    # return an empty/None sentinel. This prevents the noisy multi-kilobyte
+    # header dump that HL's SDK puts into its exception when CloudFront
+    # rate-limits us. Callers get a clean empty result and log a short
+    # message; the _rate_limited_until timestamp forces ALL subsequent
+    # read calls in the next 60 seconds to short-circuit without hitting
+    # the network, so one 429 doesn't immediately cause 5 more.
+
+    _rate_limited_until: float = 0.0
+
+    def _is_rate_limited(self) -> bool:
+        return time.time() < self._rate_limited_until
+
+    def _note_rate_limit(self, seconds: float = 60.0) -> None:
+        """Mark the client as rate-limited for the next *seconds* seconds."""
+        self._rate_limited_until = max(
+            self._rate_limited_until, time.time() + seconds
+        )
+
+    @staticmethod
+    def _is_429(exc: BaseException) -> bool:
+        """Detect a 429 in the many shapes HL's SDK wraps errors in."""
+        # The SDK raises a tuple-like error where the first element is
+        # the HTTP status code. We also check string form as a fallback.
+        try:
+            if exc.args and isinstance(exc.args[0], (tuple, list)):
+                status = exc.args[0][0]
+                if status == 429:
+                    return True
+        except Exception:
+            pass
+        msg = str(exc)
+        return msg.startswith("(429,") or " 429 " in msg or "429," in msg
 
     async def get_prices(self) -> Dict[str, float]:
-        """Return {coin: mid_price} for every listed perpetual."""
-        raw = await asyncio.to_thread(self.info.all_mids)
-        return {k: float(v) for k, v in raw.items()}
+        """Return {coin: mid_price} for every listed perpetual, or {} on rate-limit."""
+        if self._is_rate_limited():
+            return {}
+        try:
+            raw = await asyncio.to_thread(self.info.all_mids)
+            return {k: float(v) for k, v in raw.items()}
+        except Exception as exc:
+            if self._is_429(exc):
+                self._note_rate_limit(60.0)
+                # Raise a small, clean exception so the caller's log isn't
+                # flooded with header dumps. Callers catch Exception so this
+                # still takes the error path.
+                raise RuntimeError("HL rate-limited (429) — backing off 60s") from None
+            raise
 
     async def get_user_state(self, address: str) -> dict:
         """Full margin / position state for an arbitrary address."""
-        return await asyncio.to_thread(self.info.user_state, address)
+        if self._is_rate_limited():
+            return {}
+        try:
+            return await asyncio.to_thread(self.info.user_state, address)
+        except Exception as exc:
+            if self._is_429(exc):
+                self._note_rate_limit(60.0)
+                return {}
+            raise
 
     async def get_account_info(self) -> dict:
         """Convenience — our own account state on the exchange."""
         if not self.address:
             return {}
-        return await asyncio.to_thread(self.info.user_state, self.address)
+        return await self.get_user_state(self.address)
 
     async def get_meta_and_asset_ctxs(self) -> dict:
         """
         Returns the meta + per-asset context (funding, OI, oracle prices).
         The SDK exposes this through ``info.meta_and_asset_ctxs()``.
+        Returns {} on rate-limit so callers can treat "no fresh data"
+        and "rate limited" the same way.
         """
-        data = await asyncio.to_thread(self.info.meta_and_asset_ctxs)
-        self._meta = data  # cache for coin->index lookups
-        return data
+        if self._is_rate_limited():
+            return {}
+        try:
+            data = await asyncio.to_thread(self.info.meta_and_asset_ctxs)
+            self._meta = data  # cache for coin->index lookups
+            return data
+        except Exception as exc:
+            if self._is_429(exc):
+                self._note_rate_limit(60.0)
+                return {}
+            raise
 
     async def get_candles(
         self, coin: str, interval: str = "1h", count: int = 100

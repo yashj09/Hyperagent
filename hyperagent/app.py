@@ -10,6 +10,7 @@ stop-loss monitoring.
 import asyncio
 import logging
 import time
+from typing import Dict, List, Optional
 
 from textual.app import App, ComposeResult
 from textual.widgets import Header, Footer, TabbedContent, TabPane
@@ -36,6 +37,9 @@ from strategies.ai_wrapper import AIWrapper
 from tui.screens.dashboard import DashboardScreen
 from tui.screens.strategy_config import StrategyConfigScreen
 from tui.screens.trade_journal import TradeJournalScreen
+from tui.screens.analytics import AnalyticsScreen
+from tui.screens.confirm_kill_modal import ConfirmKillModal
+from tui.screens.reconcile_modal import ReconcileModal
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +55,9 @@ class HyperAgentApp(App):
         Binding("d", "switch_tab('tab-dashboard')", "Dashboard"),
         Binding("s", "switch_tab('tab-strategy')", "Strategy"),
         Binding("j", "switch_tab('tab-journal')", "Journal"),
+        Binding("n", "switch_tab('tab-analytics')", "Analytics"),
         Binding("a", "toggle_ai", "Toggle AI"),
+        Binding("k", "kill_positions", "Kill All"),
         Binding("q", "quit", "Quit"),
     ]
 
@@ -109,6 +115,8 @@ class HyperAgentApp(App):
                 yield StrategyConfigScreen(state=self.state)
             with TabPane("Journal", id="tab-journal"):
                 yield TradeJournalScreen(state=self.state)
+            with TabPane("Analytics", id="tab-analytics"):
+                yield AnalyticsScreen(state=self.state)
         yield Footer()
 
     # ------------------------------------------------------------------
@@ -126,11 +134,18 @@ class HyperAgentApp(App):
         self.run_stop_loss_monitor()
         self.run_regime_detector()
         self.run_liquidation_poller()
+        self.run_equity_tracker()
 
         # Periodic UI refresh
         self.set_interval(
             config.DASHBOARD_REFRESH_RATE, self._refresh_display
         )
+
+        # Startup reconciliation — runs AFTER price feed initializes so we
+        # have prices for the modal display. state.is_running is False on
+        # boot so the strategy loop won't trade while the modal is up.
+        # User must click "Start Strategy" after resolving the modal.
+        self.run_reconcile_on_startup()
 
     # ------------------------------------------------------------------
     # Actions
@@ -158,6 +173,55 @@ class HyperAgentApp(App):
             pass
 
     # ------------------------------------------------------------------
+    # Kill switch (force-close positions)
+    # ------------------------------------------------------------------
+
+    def action_kill_positions(self) -> None:
+        """Bound to 'k' — confirm then flatten ALL open positions."""
+        count = len(self.state.positions)
+        self.app.push_screen(
+            ConfirmKillModal(coins=None, position_count=count),
+            self._on_kill_confirmed_all,
+        )
+
+    def close_position_by_coin(self, coin: str) -> None:
+        """Called from UI widgets (e.g. position rows) to close a single coin.
+
+        Wrapped in the same confirmation modal as the bulk kill — never
+        fire a destructive market-close without explicit user confirmation.
+        """
+        matching = [p for p in self.state.positions if p.coin == coin]
+        if not matching:
+            self.state.add_log(f"[KILL] No open position in {coin}")
+            return
+        self.app.push_screen(
+            ConfirmKillModal(coins=[coin], position_count=len(matching)),
+            lambda confirmed: self._on_kill_confirmed_coin(confirmed, coin),
+        )
+
+    def _on_kill_confirmed_all(self, confirmed: bool | None) -> None:
+        """Callback from ConfirmKillModal for the 'close all' path."""
+        if not confirmed:
+            return
+        self._run_force_close(coins=None)
+
+    def _on_kill_confirmed_coin(self, confirmed: bool | None, coin: str) -> None:
+        """Callback from ConfirmKillModal for the per-coin path."""
+        if not confirmed:
+            return
+        self._run_force_close(coins=[coin])
+
+    def _run_force_close(self, coins: list[str] | None) -> None:
+        """Drive risk.force_close and pipe its log messages into the TUI log."""
+        try:
+            messages = asyncio.run(self.risk.force_close(coins))
+            for msg in messages:
+                self.state.add_log(msg)
+        except Exception as exc:
+            self.state.add_log(f"[KILL] ERROR: {exc}")
+            logger.exception("Kill switch error")
+
+    # ------------------------------------------------------------------
     # UI refresh (called by set_interval from the main thread)
     # ------------------------------------------------------------------
 
@@ -175,6 +239,12 @@ class HyperAgentApp(App):
         except Exception:
             pass
 
+        try:
+            analytics = self.query_one(AnalyticsScreen)
+            analytics.refresh_data(self.state)
+        except Exception:
+            pass
+
     # ------------------------------------------------------------------
     # Background workers
     # ------------------------------------------------------------------
@@ -183,9 +253,16 @@ class HyperAgentApp(App):
     def run_price_feed(self):
         """Fetch prices every PRICE_POLL_INTERVAL seconds."""
         self.state.add_log("[PRICE] Price feed worker started")
+
+        # Escalating backoff for repeated rate-limits. Resets to 0 on a
+        # successful price fetch, so single 429s don't compound forever.
+        # Sequence: 30s, 60s, 120s, 240s, then capped.
+        consecutive_429s = 0
+
         while True:
             try:
                 prices = asyncio.run(self.client.get_prices())
+                consecutive_429s = 0  # success resets the counter
                 # Filter to monitored assets only
                 filtered = {
                     coin: price
@@ -199,7 +276,8 @@ class HyperAgentApp(App):
                     # Update position prices via risk manager
                     self.risk.update_position_prices(filtered)
 
-                # Fetch OI and funding from meta (needed by cascade strategy)
+                # Fetch OI and funding from meta (needed by cascade strategy).
+                # The client returns {} on rate-limit, so we just skip silently.
                 try:
                     meta = asyncio.run(self.client.get_meta_and_asset_ctxs())
                     if meta and len(meta) > 1:
@@ -218,7 +296,7 @@ class HyperAgentApp(App):
                 except Exception:
                     pass
 
-                # Try to fetch account info
+                # Try to fetch account info (client returns {} on rate-limit).
                 try:
                     account = asyncio.run(self.client.get_account_info())
                     if account:
@@ -236,11 +314,19 @@ class HyperAgentApp(App):
 
             except Exception as exc:
                 msg = str(exc)
-                if "429" in msg:
-                    self.state.add_log("[PRICE] Rate limited, backing off 30s")
-                    time.sleep(30)
+                # The client now normalises 429s to a short RuntimeError
+                # message, so detection is clean and logs fit on one line.
+                if "429" in msg or "rate-limited" in msg.lower():
+                    consecutive_429s += 1
+                    # 30, 60, 120, 240, then cap at 300s (5 min)
+                    backoff = min(30 * (2 ** (consecutive_429s - 1)), 300)
+                    self.state.add_log(
+                        f"[PRICE] Rate-limited (x{consecutive_429s}) — backing off {backoff}s"
+                    )
+                    time.sleep(backoff)
                     continue
-                self.state.add_log(f"[PRICE] Error: {msg[:100]}")
+                # Non-429 errors: log a single short line, no multi-line dump.
+                self.state.add_log(f"[PRICE] Error: {msg[:80]}")
                 logger.exception("Price feed error")
 
             time.sleep(config.PRICE_POLL_INTERVAL)
@@ -322,7 +408,12 @@ class HyperAgentApp(App):
                     # recorded in state.rejected_signals so the UI can show
                     # opportunity-cost and post-mortem stats.
                     existing_coins = {p.coin for p in self.state.positions}
-                    if signal.coin in existing_coins:
+                    if signal.coin in self.state.reconciliation_ignored:
+                        # User explicitly chose "Ignore" at startup for a
+                        # pre-existing HL position on this coin — respect
+                        # that for the whole session.
+                        self.state.add_rejected_signal(signal, "reconciliation_ignored")
+                    elif signal.coin in existing_coins:
                         self.state.add_rejected_signal(signal, "duplicate_coin")
                     elif not self.risk.is_cooled_down(signal.coin):
                         self.state.add_log(f"[RISK] Cooldown active for {signal.coin}")
@@ -581,6 +672,231 @@ class HyperAgentApp(App):
                 logger.exception("Regime detector error")
 
             time.sleep(config.REGIME_UPDATE_INTERVAL)
+
+    @work(exclusive=True, thread=True, group="reconcile")
+    def run_reconcile_on_startup(self):
+        """One-shot reconciliation: detect HL positions we didn't open.
+
+        Runs once at app start, then exits. Pushes ReconcileModal if any
+        unknown positions are found; otherwise silently logs "clean start".
+
+        Implemented as a thread worker (not inline in on_mount) because:
+          - We can't block the Textual main thread on a network call.
+          - We need to wait briefly for price feed to populate current_price
+            so the modal can display it.
+        """
+        self.state.add_log("[RECONCILE] Checking HL for untracked positions...")
+        # Let the price feed warm up so current_price is available for
+        # the modal display. If we skip this, the Current column shows "—".
+        time.sleep(4)
+
+        try:
+            account = asyncio.run(self.client.get_account_info())
+        except Exception as exc:
+            self.state.add_log(
+                f"[RECONCILE] Network error fetching account_info: {exc}. "
+                "Proceeding without reconciliation — manually verify HL "
+                "positions before enabling the strategy."
+            )
+            logger.exception("Reconcile fetch failed")
+            return
+
+        if not account:
+            self.state.add_log("[RECONCILE] No account data returned.")
+            return
+
+        # HL shape: {assetPositions: [{position: {coin, szi, entryPx, ...}}, ...]}
+        unknown: list[dict] = []
+        known_coins = {p.coin for p in self.state.positions}
+
+        for entry in account.get("assetPositions", []):
+            pos = entry.get("position", {}) if isinstance(entry, dict) else {}
+            coin = pos.get("coin")
+            szi = float(pos.get("szi", 0))
+            if not coin or szi == 0:
+                continue
+            if coin in known_coins:
+                # This session opened this position — already tracked locally.
+                continue
+            unknown.append({
+                "coin": coin,
+                "side": "long" if szi > 0 else "short",
+                "size": abs(szi),
+                "entry_price": float(pos.get("entryPx", 0)),
+                "current_price": self.state.prices.get(coin, 0),
+            })
+
+        if not unknown:
+            self.state.add_log("[RECONCILE] Clean start — no untracked positions.")
+            return
+
+        self.state.add_log(
+            f"[RECONCILE] Found {len(unknown)} untracked position(s): "
+            + ", ".join(p["coin"] for p in unknown)
+        )
+
+        # Push the modal from the main thread — Textual requires widget
+        # mutations on the main thread. call_from_thread schedules the
+        # push_screen call + callback wiring there.
+        def _push_modal():
+            self.push_screen(
+                ReconcileModal(unknown),
+                lambda actions: self._apply_reconcile_actions(actions, unknown),
+            )
+
+        self.call_from_thread(_push_modal)
+
+    def _apply_reconcile_actions(
+        self, actions: Optional[Dict[str, str]], positions: List[Dict]
+    ) -> None:
+        """Process the reconcile modal's verdict.
+
+        actions: {coin -> 'adopt' | 'ignore' | 'close'} or None on dismiss
+        positions: the same list we passed into the modal, for size/entry lookup
+        """
+        if not actions:
+            # User dismissed — treat all as Ignore (safest).
+            actions = {p["coin"]: "ignore" for p in positions}
+
+        # Build a map for O(1) lookup of the original position details
+        pos_by_coin = {p["coin"]: p for p in positions}
+
+        for coin, action in actions.items():
+            pos = pos_by_coin.get(coin)
+            if pos is None:
+                continue
+            try:
+                if action == "ignore":
+                    with self.state._lock:
+                        self.state.reconciliation_ignored.add(coin)
+                    self.state.add_log(f"[RECONCILE] Ignoring {coin} — strategies will skip this coin this session")
+                elif action == "adopt":
+                    self._adopt_position(pos)
+                elif action == "close":
+                    self._close_untracked(coin)
+            except Exception as exc:
+                self.state.add_log(f"[RECONCILE] ERROR on {coin} ({action}): {exc}")
+                logger.exception("Reconcile action failed for %s", coin)
+
+        self.state.add_log(
+            "[RECONCILE] Done. Click 'Start Strategy' when ready."
+        )
+
+    def _adopt_position(self, pos: Dict) -> None:
+        """Build an ActivePosition from reconciliation data and track it."""
+        coin = pos["coin"]
+        side = pos["side"]
+        size = pos["size"]
+        entry_price = pos["entry_price"]
+        current_price = self.state.prices.get(coin, entry_price)
+
+        # Synthesize a minimal Signal — we don't know the original strategy,
+        # so tag it 'adopted' so attribution keeps it separate.
+        adopted_signal = Signal(
+            coin=coin,
+            direction=side.upper(),
+            strategy="adopted",
+            score=0.0,
+            confidence="MEDIUM",
+            reason="Adopted at startup via reconciliation",
+        )
+
+        # Use global default trailing stop — we lost the original strategy
+        # context, and these are the safest blanket defaults.
+        trail_pct = config.TRAILING_STOP_PCT
+        if side == "long":
+            trail_price = current_price * (1 - trail_pct)
+            sl_price = entry_price * (1 - config.INITIAL_STOP_PCT)
+            tp_price = entry_price * (1 + config.TAKE_PROFIT_PCT)
+        else:
+            trail_price = current_price * (1 + trail_pct)
+            sl_price = entry_price * (1 + config.INITIAL_STOP_PCT)
+            tp_price = entry_price * (1 - config.TAKE_PROFIT_PCT)
+
+        position = ActivePosition(
+            coin=coin,
+            side=side,
+            entry_price=entry_price,
+            current_price=current_price,
+            size=size,
+            stop_loss_price=sl_price,
+            take_profit_price=tp_price,
+            trailing_stop_price=trail_price,
+            high_water_mark=current_price,
+            signal=adopted_signal,
+            entry_time=time.time(),
+            pair_id=None,
+        )
+
+        with self.state._lock:
+            self.state.positions.append(position)
+
+        self.state.add_log(
+            f"[RECONCILE] Adopted {coin} {side.upper()} size={size} "
+            f"entry=${entry_price:,.2f} trail=${trail_price:,.2f}"
+        )
+
+    def _close_untracked(self, coin: str) -> None:
+        """Market-close an untracked HL position. No TradeRecord — we don't
+        know the original strategy context, so attribution would be wrong."""
+        try:
+            result = asyncio.run(self.client.close_position(coin))
+            if result.success:
+                self.state.add_log(
+                    f"[RECONCILE] Closed {coin} @ ${result.executed_price:,.2f}"
+                )
+                asyncio.run(self.client.cancel_all_orders(coin))
+            else:
+                self.state.add_log(
+                    f"[RECONCILE] Close failed for {coin}: {result.error_message}"
+                )
+        except Exception as exc:
+            self.state.add_log(f"[RECONCILE] Close error for {coin}: {exc}")
+            logger.exception("Reconcile close failed for %s", coin)
+
+    @work(exclusive=True, thread=True, group="equity")
+    def run_equity_tracker(self):
+        """Snapshot total equity every 30s to feed the Analytics equity curve.
+
+        Equity = account_value (HL-reported) + unrealized on open positions
+                                             + realized PnL since boot
+
+        The realized-since-boot term is what makes the curve useful on an
+        EMPTY testnet wallet. account_value might be $0, but if the user
+        opens a position and it ticks up $0.50, we want to see the curve
+        go up — not stay flat at zero because of the "wait for funds" gate.
+
+        Samples are TAKEN regardless of account_value — an empty-wallet
+        user running paper-style testnet trades is a legitimate mode and
+        needs feedback too.
+
+        First sample fires quickly (5s after boot) so the Analytics tab
+        has something to show within seconds of first opening.
+        """
+        self.state.add_log("[EQUITY] Equity tracker started (30s cadence)")
+        # Short warmup — just enough for the first price_feed tick.
+        time.sleep(5)
+
+        while True:
+            try:
+                unrealized = sum(p.unrealized_pnl for p in self.state.positions)
+                # daily_pnl is the running total of realized trade PnL
+                # since the app started (reset on restart). Including it
+                # keeps the curve connected when positions close.
+                equity = (
+                    self.state.account_value
+                    + unrealized
+                    + self.state.daily_pnl
+                )
+                self.state.equity_history.append((time.time(), equity))
+            except Exception as exc:
+                # Diagnostic feed — must never crash the app.
+                logger.exception("Equity tracker error: %s", exc)
+
+            # 30s cadence (was 60s) — twice as responsive, still cheap.
+            # With maxlen=2880 snapshots that's 24h of history, which is
+            # plenty for intraday analysis.
+            time.sleep(30)
 
     @work(exclusive=True, thread=True, group="liquidations")
     def run_liquidation_poller(self):

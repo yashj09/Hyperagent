@@ -222,6 +222,96 @@ Tab.-active {
     margin-bottom: 1;
 }
 
+#enabled-assets-label {
+    color: #58a6ff;
+    text-style: bold;
+    padding: 0 1;
+    margin-top: 1;
+}
+
+#enabled-assets-row {
+    height: 5;
+    background: #0d1117;
+    border: solid #30363d;
+    margin-bottom: 1;
+    padding: 0 1;
+}
+
+.asset-toggle-cell {
+    width: auto;
+    height: auto;
+    margin-right: 2;
+    align: center middle;
+}
+
+.asset-toggle-label {
+    color: #c9d1d9;
+    text-align: center;
+    width: 6;
+}
+
+.asset-switch {
+    width: 6;
+}
+
+/* ===== Analytics Tab ===== */
+
+#analytics-container {
+    height: 100%;
+    padding: 0 1;
+}
+
+#analytics-header {
+    background: #161b22;
+    color: #58a6ff;
+    text-style: bold;
+    padding: 1;
+    height: 3;
+    margin-bottom: 1;
+}
+
+#analytics-equity-plot {
+    height: 16;
+    border: solid #30363d;
+    margin-bottom: 1;
+}
+
+#analytics-bars-row {
+    height: 14;
+    margin-bottom: 1;
+}
+
+#analytics-strategy-plot,
+#analytics-coin-plot {
+    width: 1fr;
+    height: 100%;
+    border: solid #30363d;
+}
+
+#analytics-strategy-plot {
+    margin-right: 1;
+}
+
+#analytics-tables-scroll {
+    height: 1fr;
+    border: solid #30363d;
+    background: #161b22;
+}
+
+.analytics-subheader {
+    color: #58a6ff;
+    text-style: bold;
+    padding: 1 1 0 1;
+    background: #161b22;
+}
+
+#analytics-strategy-table,
+#analytics-coin-table,
+#analytics-side-table {
+    height: auto;
+    margin-bottom: 1;
+}
+
 #strategy-params-table {
     height: 1fr;
     border: solid #30363d;

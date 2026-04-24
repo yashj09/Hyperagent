@@ -142,6 +142,27 @@ class StrategyConfigScreen(Container):
                     variant="success",
                 )
 
+        # Enabled-assets row: one Switch per coin in the app's universe.
+        # Toggling rebuilds config.MONITORED_ASSETS in place — strategies
+        # read this attribute at signal-generation time so the change
+        # takes effect on the next strategy loop iteration (<=15s).
+        #
+        # We snapshot the INITIAL list as the universe (union of current
+        # MONITORED_ASSETS + anything user later adds via config edit).
+        # Missing a coin here = can't enable it from the TUI, only via
+        # editing config.py and restarting — matches the locked-in
+        # "global allowlist only" decision.
+        yield Label("Enabled Assets:", id="enabled-assets-label")
+        with Horizontal(id="enabled-assets-row"):
+            for coin in self._asset_universe():
+                with Vertical(classes="asset-toggle-cell"):
+                    yield Label(coin, classes="asset-toggle-label")
+                    yield Switch(
+                        value=coin in config.MONITORED_ASSETS,
+                        id=f"asset-switch-{coin}",
+                        classes="asset-switch",
+                    )
+
         yield Static(
             STRATEGY_DESCRIPTIONS.get(self.state.active_strategy, ""),
             id="strategy-description",
@@ -232,6 +253,13 @@ class StrategyConfigScreen(Container):
         if event.switch.id == "ai-switch":
             self.state.ai_enabled = event.value
             self.post_message(self.AIToggled(event.value))
+            return
+
+        # Asset enable/disable switches. IDs follow pattern "asset-switch-<COIN>".
+        sw_id = event.switch.id or ""
+        if sw_id.startswith("asset-switch-"):
+            coin = sw_id[len("asset-switch-") :]
+            self._toggle_asset(coin, event.value)
 
     def on_button_pressed(self, event: Button.Pressed):
         if event.button.id == "strategy-start-btn":
@@ -331,6 +359,56 @@ class StrategyConfigScreen(Container):
                 sw.value = state.ai_enabled
         except Exception:
             pass
+
+    # ------------------------------------------------------------------
+    # Asset allowlist
+    # ------------------------------------------------------------------
+
+    _ASSET_UNIVERSE_SNAPSHOT: list[str] = []
+
+    def _asset_universe(self) -> list[str]:
+        """Return the full set of coins that get a switch in the UI.
+
+        We snapshot the current MONITORED_ASSETS the FIRST time this is
+        called (during compose), so the switch row is stable across
+        toggles. If we re-read config.MONITORED_ASSETS every time, removed
+        coins would lose their toggle — user couldn't re-enable them
+        without editing config.py.
+        """
+        if not StrategyConfigScreen._ASSET_UNIVERSE_SNAPSHOT:
+            StrategyConfigScreen._ASSET_UNIVERSE_SNAPSHOT = list(
+                config.MONITORED_ASSETS
+            )
+        return StrategyConfigScreen._ASSET_UNIVERSE_SNAPSHOT
+
+    def _toggle_asset(self, coin: str, enabled: bool) -> None:
+        """Mutate config.MONITORED_ASSETS in response to a switch flip.
+
+        Rebuilds the list from the universe snapshot so ordering stays
+        stable. Logs the change to the Dashboard log so the user sees
+        the effect. Strategies read config.MONITORED_ASSETS at signal-
+        generation time so the toggle takes effect on the next loop.
+        """
+        universe = self._asset_universe()
+        current = set(config.MONITORED_ASSETS)
+        if enabled:
+            current.add(coin)
+        else:
+            current.discard(coin)
+
+        # Preserve the original ordering from the universe snapshot.
+        new_list = [c for c in universe if c in current]
+
+        old_str = ",".join(config.MONITORED_ASSETS) or "(none)"
+        new_str = ",".join(new_list) or "(none)"
+        config.MONITORED_ASSETS = new_list
+
+        self.state.add_log(
+            f"[CONFIG] MONITORED_ASSETS: {old_str} -> {new_str}"
+        )
+        # Note: existing open positions are NOT closed when you disable a
+        # coin — only new entries are blocked. This matches the locked-in
+        # behavior: "Disabling a coin does NOT close its open position".
 
 
 # ---------------------------------------------------------------------------

@@ -4,7 +4,7 @@ Central data store that Textual widgets read from.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Deque
+from typing import Dict, List, Optional, Set, Tuple, Deque
 from collections import deque
 import threading
 import time
@@ -140,6 +140,18 @@ class AgentState:
 
     # Rejected-signal audit trail (for post-mortem analysis)
     rejected_signals: Deque = field(default_factory=lambda: deque(maxlen=200))
+
+    # Equity curve snapshots: (timestamp_seconds, equity_usd) samples
+    # appended by run_equity_tracker worker (1/min). maxlen=2880 = 48h
+    # at 1-min resolution. Read by Analytics tab equity chart.
+    equity_history: Deque[Tuple[float, float]] = field(
+        default_factory=lambda: deque(maxlen=2880)
+    )
+
+    # Coins that user chose to ignore at startup reconciliation — the HL
+    # position is left alone and strategies skip trading the coin until
+    # restart. Populated by the reconciliation modal, read in run_strategy.
+    reconciliation_ignored: Set[str] = field(default_factory=set)
 
     # Status
     is_running: bool = False
