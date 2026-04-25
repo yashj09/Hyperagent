@@ -64,6 +64,14 @@ class HyperAgentApp(App):
     def __init__(self):
         super().__init__()
 
+        # Set when the user hits `q` or Ctrl-C. All background @work(thread=True)
+        # loops poll this on each iteration and exit cleanly, so Textual's
+        # shutdown-join doesn't hang. Without this, pressing `q` left workers
+        # stuck in `while True` + `time.sleep(...)` and Textual waited
+        # forever on executor join → the user had to Ctrl-C the process,
+        # which raised KeyboardInterrupt deep inside asyncio.
+        self._shutting_down: bool = False
+
         self.state = AgentState()
         self.state.ai_enabled = config.AI_ENABLED_DEFAULT
 
@@ -157,6 +165,33 @@ class HyperAgentApp(App):
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
+
+    def action_quit(self) -> None:
+        """Signal workers to stop, then exit Textual.
+
+        Overrides the default quit action so we can flip _shutting_down
+        BEFORE Textual begins its shutdown sequence. Each background
+        worker's `while not self._shutting_down:` loop notices on the
+        next iteration (worst case one poll-interval later) and returns
+        cleanly, so the executor join in asyncio shutdown completes
+        promptly instead of hanging until Ctrl-C.
+        """
+        self._shutting_down = True
+        self.exit()
+
+    def _interruptible_sleep(self, seconds: float, step: float = 1.0) -> None:
+        """Sleep that wakes up promptly when _shutting_down flips True.
+
+        Plain time.sleep(N) blocks the worker for up to N seconds during
+        shutdown — for the regime detector that's 300s. This helper
+        sleeps in `step`-second chunks and returns early on shutdown so
+        the worst-case shutdown delay is ~1 second regardless of the
+        nominal interval.
+        """
+        end = time.time() + seconds
+        while time.time() < end and not self._shutting_down:
+            remaining = end - time.time()
+            time.sleep(min(step, max(0.0, remaining)))
 
     def action_switch_tab(self, tab_id: str) -> None:
         """Switch to a specific tab by ID."""
@@ -266,7 +301,7 @@ class HyperAgentApp(App):
         # Sequence: 30s, 60s, 120s, 240s, then capped.
         consecutive_429s = 0
 
-        while True:
+        while not self._shutting_down:
             try:
                 prices = asyncio.run(self.client.get_prices())
                 consecutive_429s = 0  # success resets the counter
@@ -336,7 +371,7 @@ class HyperAgentApp(App):
                 self.state.add_log(f"[PRICE] Error: {msg[:80]}")
                 logger.exception("Price feed error")
 
-            time.sleep(config.PRICE_POLL_INTERVAL)
+            self._interruptible_sleep(config.PRICE_POLL_INTERVAL)
 
     @work(exclusive=True, thread=True, group="scanner")
     def run_scanner(self):
@@ -344,9 +379,9 @@ class HyperAgentApp(App):
         self.state.add_log("[SCAN] Scanner worker started")
         time.sleep(5)
 
-        while True:
+        while not self._shutting_down:
             if not self.state.is_running:
-                time.sleep(config.SCAN_INTERVAL_SECONDS)
+                self._interruptible_sleep(config.SCAN_INTERVAL_SECONDS)
                 continue
 
             try:
@@ -374,7 +409,7 @@ class HyperAgentApp(App):
                 self.state.add_log(f"[SCAN] Error: {exc}")
                 logger.exception("Scanner error")
 
-            time.sleep(config.SCAN_INTERVAL_SECONDS)
+            self._interruptible_sleep(config.SCAN_INTERVAL_SECONDS)
 
     @work(exclusive=True, thread=True, group="strategy")
     def run_strategy(self):
@@ -382,7 +417,7 @@ class HyperAgentApp(App):
         self.state.add_log("[STRATEGY] Strategy worker started")
         time.sleep(3)
 
-        while True:
+        while not self._shutting_down:
             if not self.state.is_running:
                 time.sleep(1)
                 continue
@@ -440,7 +475,7 @@ class HyperAgentApp(App):
                 self.state.add_log(f"[STRATEGY] Error: {exc}")
                 logger.exception("Strategy error")
 
-            time.sleep(config.STRATEGY_POLL_INTERVAL)
+            self._interruptible_sleep(config.STRATEGY_POLL_INTERVAL)
 
     def _execute_signal(self, signal: Signal):
         """Execute a trade based on a signal. Called from strategy worker thread."""
@@ -645,7 +680,7 @@ class HyperAgentApp(App):
         """Check trailing stops every STOP_LOSS_POLL_INTERVAL seconds."""
         self.state.add_log("[RISK] Stop-loss monitor started")
 
-        while True:
+        while not self._shutting_down:
             if self.state.positions:
                 try:
                     messages = asyncio.run(self.risk.check_trailing_stops())
@@ -658,7 +693,7 @@ class HyperAgentApp(App):
                     self.state.add_log(f"[RISK] Stop monitor error: {exc}")
                     logger.exception("Stop-loss monitor error")
 
-            time.sleep(config.STOP_LOSS_POLL_INTERVAL)
+            self._interruptible_sleep(config.STOP_LOSS_POLL_INTERVAL)
 
     @work(exclusive=True, thread=True, group="regime")
     def run_regime_detector(self):
@@ -666,7 +701,7 @@ class HyperAgentApp(App):
         self.state.add_log("[REGIME] Regime detector started")
         time.sleep(10)
 
-        while True:
+        while not self._shutting_down:
             try:
                 asyncio.run(self.regime_detector.update(self.state))
                 regimes = ", ".join(
@@ -678,7 +713,7 @@ class HyperAgentApp(App):
                 self.state.add_log(f"[REGIME] Error: {exc}")
                 logger.exception("Regime detector error")
 
-            time.sleep(config.REGIME_UPDATE_INTERVAL)
+            self._interruptible_sleep(config.REGIME_UPDATE_INTERVAL)
 
     def _clear_reconcile_flag(self) -> None:
         """Flip HL_RECONCILE_ON_BOOT=0 in the user's .env after one fire.
@@ -910,7 +945,7 @@ class HyperAgentApp(App):
         # Short warmup — just enough for the first price_feed tick.
         time.sleep(5)
 
-        while True:
+        while not self._shutting_down:
             try:
                 unrealized = sum(p.unrealized_pnl for p in self.state.positions)
                 # daily_pnl is the running total of realized trade PnL
@@ -929,7 +964,7 @@ class HyperAgentApp(App):
             # 30s cadence (was 60s) — twice as responsive, still cheap.
             # With maxlen=2880 snapshots that's 24h of history, which is
             # plenty for intraday analysis.
-            time.sleep(30)
+            self._interruptible_sleep(30)
 
     @work(exclusive=True, thread=True, group="liquidations")
     def run_liquidation_poller(self):
@@ -949,7 +984,7 @@ class HyperAgentApp(App):
         time.sleep(5)  # Let price feed warm up first
 
         stats_log_counter = 0
-        while True:
+        while not self._shutting_down:
             try:
                 stats = asyncio.run(
                     self.liq_aggregator.poll(config.MONITORED_ASSETS)
@@ -994,7 +1029,7 @@ class HyperAgentApp(App):
                 self.state.add_log(f"[LIQ] Error: {str(exc)[:100]}")
                 logger.exception("Liquidation poller error")
 
-            time.sleep(config.HYPEDEXER_POLL_INTERVAL)
+            self._interruptible_sleep(config.HYPEDEXER_POLL_INTERVAL)
 
     def _flash_stop_loss(self):
         """Called from worker thread to flash the positions panel."""

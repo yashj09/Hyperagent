@@ -234,12 +234,3 @@ hyperagent/
 └── .gitignore
 ```
 
----
-
-## Built for
-
-**Elsa Agentic Hyperthon** — Track 1: Hyperliquid Perp Agent
-
-> *"Build an autonomous perp trading agent on Hyperliquid testnet. Pick your strategy: momentum flip, funding-rate arb, or vault copy-trader. Ship with a working stop-loss that fires on camera."*
-
-We built all of them — and then some.

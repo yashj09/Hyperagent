@@ -88,6 +88,138 @@ def _yes_no(label: str, default: bool = True) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Arrow-key selector (stdlib only)
+# ---------------------------------------------------------------------------
+#
+# Options are a list of (label, value, enabled) tuples. Only enabled items
+# can be chosen. Disabled items are rendered dimmed + a hint and are skipped
+# by ↑/↓ navigation. Enter commits; Ctrl-C raises KeyboardInterrupt like
+# every other prompt in this module.
+
+def _read_key() -> str:
+    """Read one keypress (including multi-byte arrow escapes) in raw mode.
+
+    Returns: 'up', 'down', 'enter', 'ctrl-c', or the literal character.
+    """
+    import termios, tty  # noqa: E401  — Unix only; guarded in _select()
+
+    fd = sys.stdin.fileno()
+    old = termios.tcgetattr(fd)
+    try:
+        tty.setraw(fd)
+        ch = sys.stdin.read(1)
+        if ch == "\x1b":
+            # escape sequence; read the next two bytes
+            rest = sys.stdin.read(2)
+            if rest == "[A":
+                return "up"
+            if rest == "[B":
+                return "down"
+            return "esc"
+        if ch in ("\r", "\n"):
+            return "enter"
+        if ch == "\x03":
+            return "ctrl-c"
+        return ch
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old)
+
+
+def _select(label: str, options: list[tuple[str, str, bool]], default_index: int = 0) -> str:
+    """Arrow-key menu. Returns the `value` from the chosen option tuple.
+
+    Falls back to a numbered prompt if stdin isn't a TTY (CI, piped input)
+    or if the OS doesn't support termios (Windows). The fallback honors the
+    `enabled` flag so disabled rows still can't be picked.
+    """
+    # Non-TTY fallback — standard numbered menu
+    fallback = not sys.stdin.isatty() or sys.platform == "win32"
+    if not fallback:
+        try:
+            import termios  # noqa: F401
+        except ImportError:
+            fallback = True
+
+    if fallback:
+        print(_bold(label))
+        for i, (opt_label, _value, enabled) in enumerate(options, start=1):
+            suffix = "" if enabled else _dim("  (coming soon)")
+            print(f"  [{i}] {opt_label}{suffix}")
+        while True:
+            raw = _prompt("Select", default=str(default_index + 1))
+            try:
+                idx = int(raw) - 1
+            except ValueError:
+                print(_red(f"  please enter a number 1–{len(options)}"))
+                continue
+            if not (0 <= idx < len(options)):
+                print(_red(f"  please enter a number 1–{len(options)}"))
+                continue
+            if not options[idx][2]:
+                print(_yellow(f"  {options[idx][0]} is coming soon — pick another."))
+                continue
+            return options[idx][1]
+
+    # Interactive arrow-key mode
+    idx = default_index
+    if not options[idx][2]:
+        # Advance to first enabled option
+        for i, (_l, _v, en) in enumerate(options):
+            if en:
+                idx = i
+                break
+
+    # Print label once; menu rows re-render in place on each keypress
+    print(_bold(label))
+
+    def _render(first: bool) -> None:
+        if not first:
+            # Move cursor up to overwrite the previous menu render
+            sys.stdout.write(f"\033[{len(options)}A")
+        for i, (opt_label, _value, enabled) in enumerate(options):
+            sys.stdout.write("\r\033[K")  # clear the line
+            if i == idx:
+                prefix = _green("  ▸ ")
+                text = _bold(opt_label) if enabled else _dim(opt_label)
+            else:
+                prefix = "    "
+                text = opt_label if enabled else _dim(opt_label)
+            suffix = "" if enabled else _dim("  (coming soon)")
+            sys.stdout.write(f"{prefix}{text}{suffix}\n")
+        sys.stdout.flush()
+
+    _render(first=True)
+    try:
+        while True:
+            key = _read_key()
+            if key == "ctrl-c":
+                raise KeyboardInterrupt
+            if key == "up":
+                # Skip disabled options
+                for offset in range(1, len(options) + 1):
+                    cand = (idx - offset) % len(options)
+                    if options[cand][2]:
+                        idx = cand
+                        break
+                _render(first=False)
+            elif key == "down":
+                for offset in range(1, len(options) + 1):
+                    cand = (idx + offset) % len(options)
+                    if options[cand][2]:
+                        idx = cand
+                        break
+                _render(first=False)
+            elif key == "enter":
+                if options[idx][2]:
+                    return options[idx][1]
+                # Shouldn't happen — we never land on disabled — but defend anyway
+    finally:
+        # Leave the final menu state visible; add a trailing newline so the
+        # next prompt doesn't overlap the last menu row.
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Wizard
 # ---------------------------------------------------------------------------
 
@@ -111,20 +243,16 @@ def run_wizard(existing: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     print(_dim("Let's get you set up. This takes ~60 seconds.\n"))
 
     # --- Step 1: Network --------------------------------------------------
-    print(_bold("1) Network"))
-    print("  [1] Testnet  " + _green("(safe, free testnet USDC)"))
-    print("  [2] Mainnet  " + _dim("(disabled in this version)"))
-    while True:
-        choice = _prompt("Select", default="1")
-        if choice == "1":
-            network = "testnet"
-            break
-        if choice == "2":
-            print(_yellow(
-                "  Mainnet is coming soon. For now we only sign on testnet."
-            ))
-            continue
-        print(_red("  please enter 1 or 2"))
+    # Arrow-key selector — ↑/↓ navigate, Enter commits. Mainnet is shown
+    # dimmed with a "coming soon" hint and can't be selected.
+    network = _select(
+        "1) Network  " + _dim("(↑/↓ to move, Enter to select)"),
+        [
+            ("Testnet  " + _green("(safe, free testnet USDC)"), "testnet", True),
+            ("Mainnet  " + _yellow("Coming soon"), "mainnet", False),
+        ],
+        default_index=0,
+    )
     print()
 
     # --- Step 2: Reconcile existing positions ----------------------------

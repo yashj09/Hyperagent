@@ -10,6 +10,21 @@ HyperAgent is an interactive terminal-based trading agent that watches the marke
 
 You pick a strategy. You hit Start. It trades by itself.
 
+---
+
+## ⚠️ Disclaimer
+
+> **HyperAgent is experimental software provided "as-is" with no warranty of any kind.**
+>
+> - **Not financial advice.** Nothing in this project, its code, its output, or its AI-generated explanations constitutes financial, investment, or trading advice. Signals and reasoning produced by the agent can be wrong.
+> - **Testnet only — for now.** This release signs exclusively on Hyperliquid *testnet*. Testnet USDC has no monetary value. Do **not** modify the code to point at mainnet unless you fully understand the risks and accept full responsibility for any losses.
+> - **Trading is risky.** Automated trading strategies can and do lose money. Past performance of any strategy — backtested or live — is not indicative of future results. Liquidation cascades, funding flips, and breakout plays can move against you faster than stop-losses can react.
+> - **Bugs happen.** This is experimental code. Expect edge cases, race conditions, and unhandled API errors. Review the source before running it, and never run it unattended with funds you cannot afford to lose.
+> - **You are responsible.** By installing or running HyperAgent you acknowledge that all trades, gains, and losses executed through it are solely your responsibility. The authors and contributors accept no liability for any outcome.
+> - **Compliance is on you.** Automated perpetual-futures trading may be restricted or regulated in your jurisdiction. Check your local laws before using this tool.
+
+---
+
 ## Install
 
 ```bash
@@ -234,12 +249,3 @@ hyperagent/
 └── .gitignore
 ```
 
----
-
-## Built for
-
-**Elsa Agentic Hyperthon** — Track 1: Hyperliquid Perp Agent
-
-> *"Build an autonomous perp trading agent on Hyperliquid testnet. Pick your strategy: momentum flip, funding-rate arb, or vault copy-trader. Ship with a working stop-loss that fires on camera."*
-
-We built all of them — and then some.
