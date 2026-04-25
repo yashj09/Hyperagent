@@ -64,6 +64,19 @@ class HyperLiquidClient:
             hl_constants.MAINNET_API_URL, session, max_retries=3
         )
 
+        # Account-state Info: pointed at the same network the Exchange
+        # trades on. Mainnet info is correct for market data (deep liquidity,
+        # public) but wrong for user_state — the user's positions live on
+        # whichever network we're trading on, so reconciliation would see
+        # an empty account if we used the mainnet Info here.
+        account_url = (
+            hl_constants.TESTNET_API_URL if testnet
+            else hl_constants.MAINNET_API_URL
+        )
+        self.account_info = self._init_info_with_retries(
+            account_url, session, max_retries=3
+        )
+
         # ----- Testnet Exchange (trading) -----
         self.exchange: Optional[Exchange] = None
         self.address: Optional[str] = None
@@ -241,11 +254,16 @@ class HyperLiquidClient:
             raise
 
     async def get_user_state(self, address: str) -> dict:
-        """Full margin / position state for an arbitrary address."""
+        """Full margin / position state for an arbitrary address.
+
+        Uses account_info (network-matched to the Exchange) rather than
+        the mainnet-pinned info, so positions opened on testnet are
+        visible to reconciliation.
+        """
         if self._is_rate_limited():
             return {}
         try:
-            return await asyncio.to_thread(self.info.user_state, address)
+            return await asyncio.to_thread(self.account_info.user_state, address)
         except Exception as exc:
             if self._is_429(exc):
                 self._note_rate_limit(60.0)
@@ -522,7 +540,7 @@ class HyperLiquidClient:
         self._require_exchange()
         try:
             open_orders = await asyncio.to_thread(
-                self.info.open_orders, self.address
+                self.account_info.open_orders, self.address
             )
             oids = [
                 o["oid"] for o in open_orders

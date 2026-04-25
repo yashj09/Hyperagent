@@ -298,7 +298,7 @@ class AnalyticsScreen(Container):
         if not rows:
             # textual_plotext doesn't proxy plotext.simple_bar — use the
             # exposed bar() with orientation='horizontal' instead.
-            plt.bar(["(no data)"], [1.0], orientation="horizontal")
+            plt.bar(["(no data)"], [1.0], orientation="horizontal", color="gray")
             plt.title(f"{full_title}\nwaiting for activity…")
             plot.refresh()
             return
@@ -307,6 +307,7 @@ class AnalyticsScreen(Container):
         ordered = sorted(rows.values(), key=lambda r: r.total, reverse=True)
         labels = [r.key for r in ordered]
         values = [round(r.total, 4) for r in ordered]
+        net = sum(values)
 
         # Edge case: all values are exactly 0 (position just opened, no tick yet).
         # bar() with all-zeros renders as empty bars + label. Add a tiny
@@ -314,11 +315,30 @@ class AnalyticsScreen(Container):
         # so the user can see the labels and know data is incoming.
         if all(abs(v) < 1e-9 for v in values):
             display_values = [1e-6] * len(values)
-            plt.bar(labels, display_values, orientation="horizontal")
+            plt.bar(labels, display_values, orientation="horizontal", color="gray")
             plt.title(f"{full_title}\nall PnL = $0.00 (waiting for price movement)")
-        else:
-            plt.bar(labels, values, orientation="horizontal")
-            plt.title(full_title)
+            plot.refresh()
+            return
+
+        # Split into winners (>=0) and losers (<0) and render each group in a
+        # single bar() call. Two separate calls = plotext lets us assign
+        # distinct colors per group. Ordering is preserved because `ordered`
+        # is already sorted by total DESC, so positives stay on top.
+        pos_labels = [l for l, v in zip(labels, values) if v >= 0]
+        pos_values = [v for v in values if v >= 0]
+        neg_labels = [l for l, v in zip(labels, values) if v < 0]
+        neg_values = [v for v in values if v < 0]
+
+        if pos_values:
+            plt.bar(pos_labels, pos_values, orientation="horizontal", color="green")
+        if neg_values:
+            plt.bar(neg_labels, neg_values, orientation="horizontal", color="red")
+
+        # Headline in the title so users see net PnL at a glance without
+        # summing bars in their head. Sign-prefix the amount and tint the
+        # title to match.
+        net_str = f"{net:+.2f}" if abs(net) >= 0.005 else "0.00"
+        plt.title(f"{full_title}  |  Net: ${net_str}")
         plot.refresh()
 
     # ----- Attribution tables -----

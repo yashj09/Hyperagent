@@ -97,9 +97,10 @@ class ReconcileModal(ModalScreen[Dict[str, str]]):
     ):
         super().__init__(**kwargs)
         self.positions = positions
-        # Start every row as "ignore" — the safest default. User explicitly
-        # opts in to Adopt or Close by cycling through.
-        self.actions: Dict[str, str] = {p["coin"]: "ignore" for p in positions}
+        # Default to "adopt": the modal is only shown because the user
+        # answered "yes" to the wizard's adopt question, so pressing
+        # Confirm without cycling should honour that intent.
+        self.actions: Dict[str, str] = {p["coin"]: "adopt" for p in positions}
         # Row key -> coin, so we can resolve DataTable cursor to the coin.
         self._row_coins: List[str] = []
 
