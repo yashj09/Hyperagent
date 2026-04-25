@@ -3,18 +3,17 @@ Main dashboard screen — a Container placed inside a TabPane.
 
 Layout (using Textual containers, no CSS grid):
   Row 1: MarketTicker (full width)
-  Row 2: Heatmap (left) | Cascade Gauge + AI Panel (right)
+  Row 2: Liquidation Stats (left) | AI Panel (right)
   Row 3: Positions (left) | Log (right)
 """
 
-from textual.containers import Container, Horizontal, Vertical, VerticalScroll
+from textual.containers import Container, Horizontal, VerticalScroll
 from textual.widgets import Static, RichLog
 from rich.text import Text
 
 from hyperagent.core.state import AgentState
 from hyperagent.tui.widgets.market_ticker import MarketTicker
-from hyperagent.tui.widgets.heatmap import LiquidationHeatmap
-from hyperagent.tui.widgets.cascade_gauge import CascadeGauge
+from hyperagent.tui.widgets.liquidation_stats import LiquidationStatsPanel
 from hyperagent.tui.widgets.positions_panel import PositionsPanel
 
 
@@ -88,7 +87,7 @@ class LogPanel(RichLog):
                 styled.append(line, style="#3fb950")
             elif "[AI]" in line:
                 styled.append(line, style="#a371f7")
-            elif "[SCAN]" in line:
+            elif "[LIQ]" in line:
                 styled.append(line, style="#58a6ff")
             else:
                 styled.append(line, style="dim")
@@ -104,11 +103,9 @@ class DashboardScreen(Container):
     def compose(self):
         yield MarketTicker()
         with Horizontal(id="dashboard-row2"):
-            with VerticalScroll(id="heatmap-scroll"):
-                yield LiquidationHeatmap()
-            with Vertical(id="right-top-container"):
-                yield CascadeGauge()
-                yield AIPanel()
+            with VerticalScroll(id="liquidation-stats-scroll"):
+                yield LiquidationStatsPanel()
+            yield AIPanel()
         with Horizontal(id="dashboard-row3"):
             with VerticalScroll(id="positions-scroll"):
                 yield PositionsPanel()
@@ -121,11 +118,7 @@ class DashboardScreen(Container):
         except Exception:
             pass
         try:
-            self.query_one(LiquidationHeatmap).update_clusters(state)
-        except Exception:
-            pass
-        try:
-            self.query_one(CascadeGauge).update_scores(state)
+            self.query_one(LiquidationStatsPanel).update_stats(state)
         except Exception:
             pass
         try:

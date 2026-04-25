@@ -21,8 +21,6 @@ from hyperagent import config
 from hyperagent.core.state import AgentState, Signal, ActivePosition
 from hyperagent.core.client import HyperLiquidClient
 from hyperagent.core.risk import RiskManager
-from hyperagent.scanner.liquidation_scanner import LiquidationScanner
-from hyperagent.scanner.whale_addresses import get_all_addresses
 from hyperagent.core.regime import RegimeDetector
 from hyperagent.core.candle_cache import CandleCache
 from hyperagent.core.hypedexer_client import HypeDexerClient
@@ -78,9 +76,6 @@ class HyperAgentApp(App):
         self.client = HyperLiquidClient(testnet=True)
         self.risk = RiskManager(self.client, self.state)
 
-        addresses = get_all_addresses()
-        self.scanner = LiquidationScanner(self.client.info, addresses)
-
         self.candle_cache = CandleCache(self.client.info)
         self.regime_detector = RegimeDetector(self.client.info, self.candle_cache)
 
@@ -104,7 +99,6 @@ class HyperAgentApp(App):
 
         self.state.add_log("[INIT] HyperAgent v2 starting up...")
         self.state.add_log(f"[INIT] Monitoring: {', '.join(config.MONITORED_ASSETS)}")
-        self.state.add_log(f"[INIT] Whale addresses loaded: {len(addresses)}")
         self.state.add_log(
             f"[INIT] Strategies: {', '.join(self.strategies.keys())}"
         )
@@ -137,7 +131,6 @@ class HyperAgentApp(App):
 
         # Start background loops
         self.run_price_feed()
-        self.run_scanner()
         self.run_strategy()
         self.run_stop_loss_monitor()
         self.run_regime_detector()
@@ -318,7 +311,8 @@ class HyperAgentApp(App):
                     # Update position prices via risk manager
                     self.risk.update_position_prices(filtered)
 
-                # Fetch OI and funding from meta (needed by cascade strategy).
+                # Fetch OI and funding from meta — surfaced in analytics and
+                # used by funding-carry / regime-detection paths.
                 # The client returns {} on rate-limit, so we just skip silently.
                 try:
                     meta = asyncio.run(self.client.get_meta_and_asset_ctxs())
@@ -373,44 +367,6 @@ class HyperAgentApp(App):
 
             self._interruptible_sleep(config.PRICE_POLL_INTERVAL)
 
-    @work(exclusive=True, thread=True, group="scanner")
-    def run_scanner(self):
-        """Run the liquidation scanner every SCAN_INTERVAL_SECONDS."""
-        self.state.add_log("[SCAN] Scanner worker started")
-        time.sleep(5)
-
-        while not self._shutting_down:
-            if not self.state.is_running:
-                self._interruptible_sleep(config.SCAN_INTERVAL_SECONDS)
-                continue
-
-            try:
-                levels_by_coin = asyncio.run(self.scanner.scan_all())
-                self.state.liquidation_levels = levels_by_coin
-                total_levels = sum(len(v) for v in levels_by_coin.values())
-                self.state.addresses_scanned = len(self.scanner.addresses)
-
-                all_clusters = {}
-                for coin, levels in levels_by_coin.items():
-                    price = self.state.prices.get(coin, 0)
-                    if price > 0:
-                        clusters = self.scanner.cluster_levels(coin, levels, price)
-                        if clusters:
-                            all_clusters[coin] = clusters
-                self.state.clusters = all_clusters
-                self.state.last_scan_time = time.time()
-
-                cluster_count = sum(len(v) for v in all_clusters.values())
-                self.state.add_log(
-                    f"[SCAN] Done: {total_levels} liq levels, "
-                    f"{cluster_count} clusters from {self.state.addresses_scanned} addrs"
-                )
-            except Exception as exc:
-                self.state.add_log(f"[SCAN] Error: {exc}")
-                logger.exception("Scanner error")
-
-            self._interruptible_sleep(config.SCAN_INTERVAL_SECONDS)
-
     @work(exclusive=True, thread=True, group="strategy")
     def run_strategy(self):
         """Run the active strategy — fast loop, instant execution."""
@@ -438,7 +394,6 @@ class HyperAgentApp(App):
 
                 if signal:
                     self.state.active_signals.append(signal)
-                    self.state.cascade_scores[signal.coin] = signal.score
                     self.state.add_log(
                         f"[SIGNAL] {signal.strategy}: {signal.direction} {signal.coin} "
                         f"score={signal.score:.0f} ({signal.confidence})"

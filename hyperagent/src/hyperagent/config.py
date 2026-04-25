@@ -61,16 +61,10 @@ HL_RECONCILE_ON_BOOT = os.getenv("HL_RECONCILE_ON_BOOT", "") == "1"
 
 MONITORED_ASSETS = ["BTC", "ETH", "SOL", "DOGE", "XRP", "SUI", "AVAX", "LINK"]
 
-SCAN_INTERVAL_SECONDS = 30
-MAX_ADDRESSES_PER_SCAN = 200
-SCANNER_WORKERS = 10
-
-# Legacy cascade (kept for scanner compatibility)
-CASCADE_PROXIMITY_PCT = 0.02
-CASCADE_DENSITY_THRESHOLD = 1
-CASCADE_CLUSTER_WIDTH_PCT = 0.005
-CASCADE_SIGNAL_THRESHOLD = 55
-CASCADE_HIGH_CONFIDENCE = 75
+# Minimum signal score at which the AI wrapper bothers asking Claude for
+# reasoning. Below this, we skip the LLM call to save latency/cost on
+# low-conviction signals. Applies to every strategy (not just cascade).
+AI_REASONING_MIN_SCORE = 55
 
 # --- Trend Follower (replaces Cascade as primary strategy) ---
 # ATR multipliers widened per code review: CTA convention is 4x ATR.

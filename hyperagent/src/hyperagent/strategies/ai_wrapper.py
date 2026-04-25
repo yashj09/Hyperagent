@@ -44,7 +44,7 @@ class AIWrapper(BaseStrategy):
         """Generate signal from wrapped strategy, then add AI reasoning if strong enough."""
         signal = await self.strategy.generate_signal(state)
 
-        if signal and signal.score >= config.CASCADE_SIGNAL_THRESHOLD:
+        if signal and signal.score >= config.AI_REASONING_MIN_SCORE:
             try:
                 reasoning = await asyncio.to_thread(
                     self._get_reasoning, signal, state

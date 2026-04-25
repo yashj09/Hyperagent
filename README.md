@@ -6,24 +6,9 @@
 
 **Autonomous Trading Terminal for Hyperliquid (testnet)**
 
-HyperAgent is an interactive terminal-based trading agent that watches the market in real-time, detects trading opportunities using 6 different strategies, executes trades autonomously, manages risk with trailing stop-losses, and explains every decision with AI — all from a single terminal interface.
+HyperAgent is an interactive terminal-based trading agent that watches the market in real-time, detects trading opportunities using multiple strategies, executes trades autonomously, manages risk with trailing stop-losses, and explains every decision with AI — all from a single terminal interface.
 
 You pick a strategy. You hit Start. It trades by itself.
-
----
-
-## ⚠️ Disclaimer
-
-> **HyperAgent is experimental software provided "as-is" with no warranty of any kind.**
->
-> - **Not financial advice.** Nothing in this project, its code, its output, or its AI-generated explanations constitutes financial, investment, or trading advice. Signals and reasoning produced by the agent can be wrong.
-> - **Testnet only — for now.** This release signs exclusively on Hyperliquid *testnet*. Testnet USDC has no monetary value. Do **not** modify the code to point at mainnet unless you fully understand the risks and accept full responsibility for any losses.
-> - **Trading is risky.** Automated trading strategies can and do lose money. Past performance of any strategy — backtested or live — is not indicative of future results. Liquidation cascades, funding flips, and breakout plays can move against you faster than stop-losses can react.
-> - **Bugs happen.** This is experimental code. Expect edge cases, race conditions, and unhandled API errors. Review the source before running it, and never run it unattended with funds you cannot afford to lose.
-> - **You are responsible.** By installing or running HyperAgent you acknowledge that all trades, gains, and losses executed through it are solely your responsibility. The authors and contributors accept no liability for any outcome.
-> - **Compliance is on you.** Automated perpetual-futures trading may be restricted or regulated in your jurisdiction. Check your local laws before using this tool.
-
----
 
 ## Install
 
@@ -55,7 +40,7 @@ Don't have `pipx`? [Install it in 30 seconds](https://pipx.pypa.io/stable/instal
 Every second, HyperAgent:
 
 1. **Watches** — Pulls live prices, funding rates, open interest, and orderbook depth from Hyperliquid mainnet
-2. **Scans** — Reads 28+ whale wallets to find where their liquidation prices cluster
+2. **Listens** — Polls HypeDexer's full liquidation firehose (Hyperliquid-wide) for ongoing cascade events
 3. **Thinks** — Runs the active strategy's logic: scoring cascades, counting indicator votes, measuring orderbook imbalance, or calculating funding carry
 4. **Decides** — Only trades when the signal passes confidence thresholds AND risk checks
 5. **Executes** — Places market orders on Hyperliquid testnet instantly, sets native TP/SL as safety nets
@@ -73,43 +58,44 @@ Every second, HyperAgent:
 ├──────────────────────────────────────────────────────────────────┤
 │                                                                    │
 │  STRATEGIES                    CORE                                │
-│  ┌────────────────────┐       ┌──────────────────────────────┐    │
-│  │ Liquidation Cascade │       │ Dual Client                  │    │
-│  │ Momentum Flip       │──────>│  Mainnet Info (read-only)    │    │
-│  │ Funding Sniper      │       │  Testnet Exchange (trading)  │    │
-│  │ Volatility Breakout │       └──────────────────────────────┘    │
-│  │ Orderbook Imbalance │       ┌──────────────────────────────┐    │
-│  └─────────┬──────────┘       │ Risk Manager                 │    │
-│            │                   │  Trailing stop (software)    │    │
-│  ┌─────────▼──────────┐       │  Native TP/SL (exchange)     │    │
-│  │ AI Wrapper          │       │  Daily loss limits           │    │
-│  │ (Claude Haiku via   │       │  Position sizing             │    │
-│  │  AWS Bedrock)       │       └──────────────────────────────┘    │
+│  ┌─────────────────────┐      ┌──────────────────────────────┐    │
+│  │ Trend Follower      │      │ Dual Client                  │    │
+│  │ Momentum            │─────>│  Mainnet Info (read-only)    │    │
+│  │ Funding Carry       │      │  Testnet Exchange (trading)  │    │
+│  │ Volatility Breakout │      └──────────────────────────────┘    │
+│  │ Pairs Reversion     │      ┌──────────────────────────────┐    │
+│  │ Liquidation Cascade │      │ Risk Manager                 │    │
+│  └─────────┬───────────┘      │  Trailing stop (software)    │    │
+│            │                   │  Native TP/SL (exchange)     │    │
+│  ┌─────────▼──────────┐       │  Daily loss limits           │    │
+│  │ AI Wrapper          │       │  Position sizing             │    │
+│  │ (Claude Haiku via   │       └──────────────────────────────┘    │
+│  │  AWS Bedrock)       │                                            │
 │  └────────────────────┘                                            │
 │                                                                    │
-│  SCANNER                       TUI                                 │
+│  LIQUIDATION DATA              TUI                                 │
 │  ┌────────────────────┐       ┌──────────────────────────────┐    │
-│  │ Liquidation Scanner │       │ Market Ticker                │    │
-│  │ 28+ whale addresses │       │ Liquidation Heatmap          │    │
-│  │ ThreadPool scanning │       │ Cascade Score Gauge          │    │
-│  │ Cluster detection   │       │ AI Reasoning Panel           │    │
-│  └────────────────────┘       │ Positions + Trailing Stop    │    │
-│                                │ Scrollable Trade Log         │    │
+│  │ HypeDexer Client   │       │ Market Ticker                │    │
+│  │ Full liquidation   │       │ Liquidation Stats (v2)       │    │
+│  │ firehose (30s)     │       │ AI Reasoning Panel           │    │
+│  │ Rolling aggregator │       │ Positions + Trailing Stop    │    │
+│  └────────────────────┘       │ Scrollable Trade Log         │    │
 │                                └──────────────────────────────┘    │
 └──────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 5 Trading Strategies
+## Trading Strategies
 
 | Strategy | What It Does | Speed |
 |----------|-------------|-------|
-| **Liquidation Cascade** | Scans whale wallets, maps liquidation price clusters, scores cascade probability (proximity + density + momentum + funding), trades the cascade direction | Every 1s |
-| **Momentum Flip** | 6-indicator voting (RSI, MACD, EMA, Bollinger Bands, 6h/12h momentum) — 4/6 majority triggers entry | Every 1s |
-| **Funding Sniper** | Trades against overcrowded positions to collect funding payments. Near risk-free carry trade | Every 1s |
-| **Volatility Breakout** | Catches sudden 5-min candle spikes, rides momentum with tight trailing stop | Every 1s |
-| **Orderbook Imbalance** | Reads L2 depth — when one side is 1.3x+ heavier, trades the imbalance direction | Every 1s |
+| **Trend Follower** | ADX(14) on 4h candles confirms trends, +DI/-DI for direction, EMA(21/55) confirms, pullback-to-EMA entries with ATR-based stops | Every 15s |
+| **Momentum** | 6-signal weighted scoring (RSI, MACD+slope, EMA crossover, BB %B, volume-momentum, 4h confirmation) with ADX chop filter | Every 15s |
+| **Funding Carry** | Research-calibrated funding arbitrage — requires >0.03% rate, settlement timing, trend filter, and funding persistence | Every 15s |
+| **Volatility Breakout** | Detects Bollinger squeeze (BB inside Keltner), then trades the breakout with ATR-adaptive thresholds and volume confirmation | Every 15s |
+| **Pairs Reversion** | Market-neutral stat-arb on BTC/ETH and SOL/AVAX — z-score on log price ratio, entry at 2σ, stop at 3.5σ | Every 15s |
+| **Liquidation Cascade** | Polls HypeDexer's full liquidation firehose, trades in-cascade direction when dominant-side USD + 3× imbalance + 1.3× acceleration all confirm an ongoing cascade | Every 15s |
 
 **AI Layer**: Any strategy can be wrapped with Claude Haiku (AWS Bedrock) for natural language trade explanations. Toggle with `a` key.
 
@@ -179,19 +165,19 @@ hyperagent
 ## Data Flow
 
 ```
-Price Feed (1s)  ──> Prices, Funding, OI ──> Shared State
-Scanner (30s)    ──> Whale positions ──> Liquidation Clusters ──> Shared State
-Strategy (1s)    ──> Read State ──> Generate Signal ──> Execute Trade
-Risk Monitor (2s)──> Check Trailing Stops ──> Close on Breach
-Dashboard (1s)   ──> Read State ──> Render All Panels
+Price Feed (5s)    ──> Prices, Funding, OI ──> Shared State
+Liq Poller (30s)   ──> HypeDexer firehose ──> Rolling Stats ──> Shared State
+Strategy (15s)     ──> Read State ──> Generate Signal ──> Execute Trade
+Risk Monitor (2s)  ──> Check Trailing Stops ──> Close on Breach
+Dashboard (1s)     ──> Read State ──> Render All Panels
 ```
 
 ---
 
 ## What Makes It Unique
 
-1. **Liquidation Cascade Predictor** — First-ever strategy that scans whale wallets to predict liquidation cascades before they happen. Uses Hyperliquid's public `liquidationPx` API that nobody else exploits
-2. **Strategy platform, not a single bot** — 5 strategies in a dropdown. Adding a new one is one file implementing `generate_signal()`
+1. **Liquidation Cascade Trader** — Trades the full Hyperliquid liquidation firehose (via HypeDexer) when dominant-side USD, imbalance, and acceleration all confirm an ongoing cascade — catching the forced-flow move, not guessing at it
+2. **Strategy platform, not a single bot** — 6 strategies in a dropdown. Adding a new one is one file implementing `generate_signal()`
 3. **AI reasoning on any strategy** — Claude Haiku explains every trade in plain English
 4. **Dual-network architecture** — Real mainnet data, safe testnet execution
 5. **Interactive TUI** — Tabs, dropdowns, toggles, scrollable logs, keyboard shortcuts. Not a script — a terminal app
@@ -221,28 +207,27 @@ hyperagent/
 ├── core/
 │   ├── client.py                   # Dual Hyperliquid client (mainnet read + testnet trade)
 │   ├── risk.py                     # Risk manager (trailing stop + native TP/SL + limits)
-│   └── state.py                    # Shared AgentState dataclass
+│   ├── state.py                    # Shared AgentState dataclass
+│   ├── hypedexer_client.py         # HypeDexer API client (liquidation firehose)
+│   └── liquidation_aggregator.py   # Rolling per-coin liquidation stats
 ├── strategies/
 │   ├── base.py                     # Abstract BaseStrategy interface
-│   ├── cascade.py                  # Liquidation Cascade Predictor
-│   ├── momentum.py                 # 6-signal Momentum Flip
-│   ├── funding_sniper.py           # Funding Rate Sniper
-│   ├── volatility_breakout.py      # Volatility Breakout
-│   ├── orderbook_imbalance.py      # Orderbook Imbalance
+│   ├── trend_follower.py           # ADX-based CTA trend follower
+│   ├── momentum.py                 # 6-signal weighted momentum
+│   ├── funding_sniper.py           # Funding carry arbitrage
+│   ├── volatility_breakout.py      # Bollinger/Keltner squeeze breakout
+│   ├── pairs_reversion.py          # Market-neutral pairs stat-arb
+│   ├── liquidation_cascade_v2.py   # Tradable cascade on HypeDexer firehose
 │   └── ai_wrapper.py               # Claude Haiku reasoning wrapper
-├── scanner/
-│   ├── liquidation_scanner.py      # Mainnet whale position scanner
-│   └── whale_addresses.py          # 28+ whale addresses
 ├── tui/
 │   ├── styles.tcss                 # Textual CSS (dark trading theme)
 │   ├── screens/
-│   │   ├── dashboard.py            # Live dashboard (6 panels)
+│   │   ├── dashboard.py            # Live dashboard
 │   │   ├── strategy_config.py      # Strategy selector + AI toggle + params
 │   │   └── trade_journal.py        # Trade history table + stats
 │   └── widgets/
 │       ├── market_ticker.py        # Live price ticker bar
-│       ├── heatmap.py              # Liquidation heatmap with density bars
-│       ├── cascade_gauge.py        # Cascade score gauge (0-100)
+│       ├── liquidation_stats.py    # Per-coin v2 liquidation stats panel
 │       └── positions_panel.py      # Active positions with trailing stop viz
 ├── requirements.txt
 ├── .env.example
