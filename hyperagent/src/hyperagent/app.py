@@ -246,8 +246,16 @@ class HyperAgentApp(App):
             return
         self._run_force_close(coins=[coin])
 
+    @work(exclusive=False, thread=True, group="kill_switch")
     def _run_force_close(self, coins: list[str] | None) -> None:
-        """Drive risk.force_close and pipe its log messages into the TUI log."""
+        """Drive risk.force_close and pipe its log messages into the TUI log.
+
+        Must run in a worker thread (not on the main loop) because it's
+        invoked from a modal-dismiss callback, where `asyncio.run()` would
+        error out with "cannot be called from a running event loop".
+        exclusive=False so a second kill (e.g. user closes another coin
+        before the first finishes) isn't silently dropped.
+        """
         try:
             messages = asyncio.run(self.risk.force_close(coins))
             for msg in messages:
