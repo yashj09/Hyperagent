@@ -46,20 +46,29 @@ class TrendFollowerStrategy(BaseStrategy):
     async def generate_signal(self, state: AgentState) -> Optional[Signal]:
         best_signal: Optional[Signal] = None
         best_score: float = 0
+        diag = self.tick  # Set by worker via begin_tick; may be None in tests.
 
         for coin in config.MONITORED_ASSETS:
             price = state.prices.get(coin)
             if not price:
+                if diag:
+                    diag.coins_skipped_no_data += 1
                 continue
+            if diag:
+                diag.coins_evaluated += 1
 
             # Regime gate: trend following requires a trend. Skip ranging/squeeze
             # markets where whipsaws dominate.
             regime = state.regime.get(coin)
             if regime in ("ranging", "squeeze"):
+                if diag:
+                    diag.reject("regime_not_trending")
                 continue
 
             candles = await self._fetch_candles(coin)
             if not candles or len(candles) < 60:
+                if diag:
+                    diag.reject("candles_missing")
                 continue
             await asyncio.sleep(0.1)  # Stagger between coins
 
@@ -75,6 +84,11 @@ class TrendFollowerStrategy(BaseStrategy):
             minus_di = adx_ind.adx_neg().iloc[-1]
 
             if adx_val < config.TREND_ADX_THRESHOLD:
+                if diag:
+                    diag.reject("adx_below_threshold")
+                    diag.note_candidate(
+                        coin, adx_val, f"ADX={adx_val:.1f}<{config.TREND_ADX_THRESHOLD}"
+                    )
                 continue
 
             ema_fast = ta.trend.EMAIndicator(
@@ -90,6 +104,8 @@ class TrendFollowerStrategy(BaseStrategy):
             atr_val = atr_ind.average_true_range().iloc[-1]
 
             if atr_val <= 0:
+                if diag:
+                    diag.reject("atr_zero")
                 continue
 
             if plus_di > minus_di and ema_fast_val > ema_slow_val:
@@ -97,17 +113,25 @@ class TrendFollowerStrategy(BaseStrategy):
             elif minus_di > plus_di and ema_fast_val < ema_slow_val:
                 direction = "SHORT"
             else:
+                if diag:
+                    diag.reject("di_ema_disagree")
                 continue
 
             pullback_dist = abs(price - ema_fast_val)
             max_pullback = config.TREND_PULLBACK_ATR_MULT * atr_val
             if pullback_dist > max_pullback:
+                if diag:
+                    diag.reject("pullback_too_far")
                 continue
 
             funding = state.funding_rates.get(coin, 0)
             if direction == "LONG" and funding < -0.0003:
+                if diag:
+                    diag.reject("funding_against")
                 continue
             if direction == "SHORT" and funding > 0.0003:
+                if diag:
+                    diag.reject("funding_against")
                 continue
 
             adx_score = min(40, (adx_val - 25) / 50 * 40)
@@ -117,7 +141,16 @@ class TrendFollowerStrategy(BaseStrategy):
 
             score = adx_score + di_score + ema_score + pullback_score
 
-            if score <= best_score or score < 55:
+            if diag:
+                diag.note_candidate(
+                    coin, score, f"{direction} ADX={adx_val:.0f} score={score:.0f}"
+                )
+
+            if score < 55:
+                if diag:
+                    diag.reject("score_below_min")
+                continue
+            if score <= best_score:
                 continue
 
             best_score = score

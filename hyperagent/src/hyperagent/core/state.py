@@ -76,6 +76,87 @@ class RejectedSignal:
 
 
 @dataclass
+class TickDiagnostics:
+    """Per-tick progress record emitted by every strategy.
+
+    The strategy mutates this like an accumulator as it walks its coin
+    universe. The worker stores the final snapshot on state.last_tick
+    after each generate_signal() call so the UI can show users WHY no
+    signal fired (or which coin won, with its score).
+
+    `gate_rejections`: bucket counts keyed by a short stable code.
+      Strategies pick their own codes — e.g. trend_follower uses
+      "regime", "adx_low", "pullback_too_far", "funding_wrong_side".
+    `top_candidate`: the best coin+score seen even if below the
+      threshold, so the user sees "closest miss" instead of silence.
+    """
+
+    strategy: str = ""
+    started_at: float = 0.0
+    finished_at: float = 0.0
+    coins_evaluated: int = 0
+    coins_skipped_no_data: int = 0
+    gate_rejections: Dict[str, int] = field(default_factory=dict)
+    top_candidate_coin: Optional[str] = None
+    top_candidate_score: float = 0.0
+    top_candidate_detail: str = ""
+    signal_fired: bool = False
+    signal_coin: Optional[str] = None
+    signal_direction: Optional[str] = None
+    signal_score: float = 0.0
+    # Optional human-readable "why nothing fired" — only set when the
+    # strategy explicitly blocked itself (e.g. funding waiting for
+    # settlement window).
+    blocker: Optional[str] = None
+    # Bedrock latency in ms for the most recent AI reasoning call, if any.
+    # Zero means no AI call was made this tick (either AI off, or no
+    # signal met the reasoning threshold).
+    ai_latency_ms: int = 0
+
+    def reject(self, gate: str, count: int = 1) -> None:
+        """Record a gate rejection by code."""
+        self.gate_rejections[gate] = self.gate_rejections.get(gate, 0) + count
+
+    def note_candidate(self, coin: str, score: float, detail: str = "") -> None:
+        """Track the best candidate seen so far, even below threshold."""
+        if score > self.top_candidate_score:
+            self.top_candidate_coin = coin
+            self.top_candidate_score = score
+            self.top_candidate_detail = detail
+
+    def summary(self) -> str:
+        """One-line text summary for the log. Compact on purpose."""
+        ai_suffix = f" (AI +{self.ai_latency_ms}ms)" if self.ai_latency_ms else ""
+        if self.blocker:
+            return f"blocked: {self.blocker}"
+        if self.signal_fired:
+            return (
+                f"SIGNAL {self.signal_direction} {self.signal_coin} "
+                f"score={self.signal_score:.0f}"
+            ) + ai_suffix
+        gates = ", ".join(
+            f"{k}={v}" for k, v in sorted(self.gate_rejections.items())
+        )
+        top = ""
+        if self.top_candidate_coin:
+            top = (
+                f" | top: {self.top_candidate_coin} "
+                f"score={self.top_candidate_score:.0f}"
+            )
+        return (
+            f"no signal | evaluated={self.coins_evaluated}{top}"
+            + (f" | {gates}" if gates else "")
+            + ai_suffix
+        )
+
+    @property
+    def elapsed_ms(self) -> int:
+        if self.finished_at <= 0 or self.started_at <= 0:
+            return 0
+        return int((self.finished_at - self.started_at) * 1000)
+
+
+@dataclass
 class AgentState:
     # Market data
     prices: Dict[str, float] = field(default_factory=dict)
@@ -127,6 +208,16 @@ class AgentState:
     # Status
     is_running: bool = False
     status_message: str = "Idle"
+
+    # Latest completed strategy tick — the UI reads this to show the user
+    # what the strategy worker is actually doing. Overwritten atomically
+    # by the worker (pointer-swap of a new TickDiagnostics dataclass), so
+    # readers get a consistent snapshot without holding a lock.
+    last_tick: Optional[TickDiagnostics] = None
+    # Wall-clock time of the most recent tick completion. The dashboard
+    # renders "last tick Ns ago" off this so users instantly see if the
+    # strategy worker has stalled.
+    last_tick_time: float = 0.0
 
     # Log
     log_lines: Deque = field(default_factory=lambda: deque(maxlen=100))

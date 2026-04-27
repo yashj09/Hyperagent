@@ -8,6 +8,7 @@ trade rationale. The reasoning is attached to signal.ai_reasoning.
 
 import asyncio
 import logging
+import time
 from typing import Optional, Dict
 
 from hyperagent import config
@@ -17,12 +18,28 @@ from hyperagent.strategies.base import BaseStrategy
 logger = logging.getLogger(__name__)
 
 
+# Threshold above which a Bedrock call is flagged as "slow" in the TUI log.
+# AWS Bedrock Claude Haiku normally returns in 600-1500ms. Anything above
+# 3000ms is usually cold-start, network, or region-cold behavior.
+_AI_SLOW_MS = 3000
+
+
 class AIWrapper(BaseStrategy):
     """Wraps any BaseStrategy and enriches signals with AI reasoning."""
 
     def __init__(self, strategy: BaseStrategy):
         self.strategy = strategy
         self._client = None
+        # Last AI-reasoning error message, if the most recent call failed.
+        # Consumed by the strategy loop to surface a distinct "[AI] failing"
+        # log line instead of polluting signal.ai_reasoning with error text
+        # (which would render as "Latest Analysis: AI unavailable: ..." in
+        # the dashboard and trade journal).
+        self.last_error: Optional[str] = None
+        # Latency of the most recent Bedrock call (ms). 0 = no call yet.
+        # Surfaced so the dashboard / heartbeat log can show users when
+        # AI is what's making the loop feel slow.
+        self.last_latency_ms: int = 0
 
     @property
     def name(self) -> str:
@@ -41,18 +58,43 @@ class AIWrapper(BaseStrategy):
         return self._client
 
     async def generate_signal(self, state: AgentState) -> Optional[Signal]:
-        """Generate signal from wrapped strategy, then add AI reasoning if strong enough."""
+        """Generate signal from wrapped strategy, then add AI reasoning if strong enough.
+
+        The wrapped strategy writes its own TickDiagnostics into its `tick`
+        attribute (set by the worker before this method is called). We do
+        NOT touch that record here — we only add a Bedrock timing note to
+        it when a reasoning call actually happens, so users can tell
+        whether slow ticks are Bedrock or the strategy itself.
+        """
         signal = await self.strategy.generate_signal(state)
 
         if signal and signal.score >= config.AI_REASONING_MIN_SCORE:
+            start = time.time()
             try:
                 reasoning = await asyncio.to_thread(
                     self._get_reasoning, signal, state
                 )
                 signal.ai_reasoning = reasoning
+                self.last_error = None
             except Exception as e:
                 logger.warning(f"AI reasoning failed: {e}")
-                signal.ai_reasoning = f"AI unavailable: {e}"
+                # Leave signal.ai_reasoning as None so UI components don't
+                # render an error string as "analysis". Record the error on
+                # the wrapper so the strategy loop can surface it visibly.
+                self.last_error = str(e)
+            finally:
+                # Always record latency — even for failed calls, because a
+                # timeout or auth error is most visible as "call that ate
+                # N seconds before raising". Helps users diagnose "why is
+                # my tick suddenly 20s?".
+                self.last_latency_ms = int((time.time() - start) * 1000)
+                # Stamp latency onto the inner strategy's diagnostics so
+                # the heartbeat line shows "(AI +Nms)". The wrapper does
+                # not own the tick record — the inner strategy does, set
+                # by the worker's begin_tick() call.
+                tick = getattr(self.strategy, "tick", None)
+                if tick is not None:
+                    tick.ai_latency_ms = self.last_latency_ms
 
         return signal
 

@@ -53,22 +53,31 @@ class MomentumStrategy(BaseStrategy):
     async def generate_signal(self, state: AgentState) -> Optional[Signal]:
         best_signal: Optional[Signal] = None
         best_score: float = 0
+        diag = self.tick
 
         for coin in config.MONITORED_ASSETS:
             price = state.prices.get(coin)
             if not price:
+                if diag:
+                    diag.coins_skipped_no_data += 1
                 continue
+            if diag:
+                diag.coins_evaluated += 1
 
             # Regime gate: skip ranging markets entirely. Momentum trades lose
             # systematically in chop; regime detector marks these.
             regime = state.regime.get(coin)
             if regime == "ranging":
+                if diag:
+                    diag.reject("regime_ranging")
                 continue
 
             candles = await self._fetch_candles(
                 coin, config.MOMENTUM_CANDLE_INTERVAL, config.MOMENTUM_CANDLE_COUNT
             )
             if not candles or len(candles) < 30:
+                if diag:
+                    diag.reject("candles_missing")
                 continue
 
             closes = pd.Series([float(c["c"]) for c in candles])
@@ -79,6 +88,11 @@ class MomentumStrategy(BaseStrategy):
             adx_ind = ta.trend.ADXIndicator(highs, lows, closes, window=14)
             adx_val = adx_ind.adx().iloc[-1]
             if adx_val < config.MOMENTUM_ADX_GATE:
+                if diag:
+                    diag.reject("adx_below_gate")
+                    diag.note_candidate(
+                        coin, adx_val, f"ADX={adx_val:.1f}<{config.MOMENTUM_ADX_GATE}"
+                    )
                 continue
 
             bull_score, bear_score, details = self._compute_scores(
@@ -105,6 +119,13 @@ class MomentumStrategy(BaseStrategy):
             total_bull = bull_score + htf_bull
             total_bear = bear_score + htf_bear
 
+            # Track best score seen even if below threshold — gives users a
+            # "closest miss" readout on the dashboard.
+            if diag:
+                peek = max(total_bull, total_bear)
+                peek_dir = "LONG" if total_bull >= total_bear else "SHORT"
+                diag.note_candidate(coin, peek, f"{peek_dir} bull={total_bull:.0f} bear={total_bear:.0f}")
+
             if total_bull >= config.MOMENTUM_VOTE_THRESHOLD and total_bull > total_bear:
                 direction = "LONG"
                 score = total_bull
@@ -112,14 +133,20 @@ class MomentumStrategy(BaseStrategy):
                 direction = "SHORT"
                 score = total_bear
             else:
+                if diag:
+                    diag.reject("score_below_threshold")
                 continue
 
             # Multi-timeframe gate: HTF must agree with direction. This is a strict
             # gate (not just scoring bonus) — research shows MTF confirmation alone
             # lifts Sharpe by 0.2-0.4 on crypto hourly momentum.
             if direction == "LONG" and htf_bull == 0:
+                if diag:
+                    diag.reject("htf_disagree")
                 continue
             if direction == "SHORT" and htf_bear == 0:
+                if diag:
+                    diag.reject("htf_disagree")
                 continue
 
             if score <= best_score:

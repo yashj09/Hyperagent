@@ -128,17 +128,37 @@ class TradeJournalScreen(Container):
 
         unrealized = sum(p.unrealized_pnl for p in self.state.positions)
 
+        # Empty journal: "0% / $0" reads as "bot lost every trade" at a
+        # glance, which is the worst possible first impression. Replace
+        # with an explicit "no trades yet" state instead of fake stats.
+        if closed_count == 0 and open_count == 0:
+            if self.state.is_running:
+                output.append(
+                    "  No trades yet — strategy running, waiting for signal...",
+                    style="dim italic",
+                )
+            else:
+                output.append(
+                    "  No trades yet. Press 's' → Start on the Strategy tab to begin.",
+                    style="dim italic",
+                )
+            summary.update(output)
+            return
+
         output.append("  Open: ", style="dim")
         output.append(f"{open_count}", style="bold #58a6ff")
         output.append("  |  Closed: ", style="dim")
         output.append(f"{closed_count}", style="bold white")
         output.append("  |  Wins: ", style="dim")
         output.append(f"{wins}", style="bold #3fb950")
-        output.append("  |  Win Rate: ", style="dim")
-        output.append(
-            f"{win_rate:.0f}%",
-            style="bold #3fb950" if win_rate >= 50 else "bold #f85149"
-        )
+        # Win rate only reads meaningfully once we have ≥1 closed trade.
+        # Before that, hide it instead of rendering a misleading 0%.
+        if closed_count > 0:
+            output.append("  |  Win Rate: ", style="dim")
+            output.append(
+                f"{win_rate:.0f}%",
+                style="bold #3fb950" if win_rate >= 50 else "bold #f85149"
+            )
         output.append("  |  Realized: ", style="dim")
         output.append(
             f"${total_pnl:+.2f}",

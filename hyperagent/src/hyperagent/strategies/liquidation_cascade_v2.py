@@ -71,12 +71,18 @@ class LiquidationCascadeV2Strategy(BaseStrategy):
         )
 
     async def generate_signal(self, state: AgentState) -> Optional[Signal]:
+        diag = self.tick
+
         # Data-staleness guard — if we haven't updated in 2 minutes, skip
         if state.liquidation_stats_updated and \
                 time.time() - state.liquidation_stats_updated > 120:
+            if diag:
+                diag.blocker = "liquidation stats stale (>2m old)"
             return None
 
         if not state.liquidation_stats:
+            if diag:
+                diag.blocker = "no liquidation data yet (HypeDexer key missing?)"
             return None
 
         # Find the strongest cascade signal across all monitored coins
@@ -87,9 +93,13 @@ class LiquidationCascadeV2Strategy(BaseStrategy):
             if not isinstance(stats, CoinLiquidationStats):
                 continue
             if coin not in state.prices or state.prices[coin] <= 0:
+                if diag:
+                    diag.coins_skipped_no_data += 1
                 continue
+            if diag:
+                diag.coins_evaluated += 1
 
-            signal = self._evaluate_coin(stats, state)
+            signal = self._evaluate_coin(stats, state, diag)
             if signal and signal.score > best_score:
                 best_score = signal.score
                 best_signal = signal
@@ -97,11 +107,13 @@ class LiquidationCascadeV2Strategy(BaseStrategy):
         return best_signal
 
     def _evaluate_coin(
-        self, stats: CoinLiquidationStats, state: AgentState
+        self, stats: CoinLiquidationStats, state: AgentState, diag=None
     ) -> Optional[Signal]:
         """Check if this coin's liquidation stats meet the cascade criteria."""
         # No dominant side = no cascade
         if stats.dominant_side is None:
+            if diag:
+                diag.reject("no_dominant_side")
             return None
 
         # Total dominant-side USD must exceed threshold
@@ -111,15 +123,26 @@ class LiquidationCascadeV2Strategy(BaseStrategy):
             else stats.hour_short_usd
         )
         threshold = stats.threshold_usd()
+        if diag:
+            diag.note_candidate(
+                stats.coin, (dominant_usd / threshold) * 30 if threshold > 0 else 0,
+                f"${dominant_usd/1e6:.1f}M dom / ${threshold/1e6:.1f}M thresh"
+            )
         if dominant_usd < threshold:
+            if diag:
+                diag.reject("below_usd_threshold")
             return None
 
         # Imbalance: one side must dominate
         if stats.imbalance_ratio < config.CASCADE_V2_IMBALANCE_RATIO:
+            if diag:
+                diag.reject("imbalance_too_low")
             return None
 
         # Acceleration: cascade must still be unfolding
         if stats.acceleration < config.CASCADE_V2_ACCELERATION_THRESHOLD:
+            if diag:
+                diag.reject("acceleration_too_low")
             return None
 
         # Direction logic:

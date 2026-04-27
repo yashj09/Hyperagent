@@ -81,6 +81,9 @@ class HypeDexerClient:
         self.timeout = config.HYPEDEXER_REQUEST_TIMEOUT
         self._last_429_at: float = 0
         self._backoff_until: float = 0
+        # Set to True on the first 401 so the poller (which has AgentState)
+        # can surface a one-time user-visible log. Cleared on first 2xx.
+        self.auth_failed: bool = False
 
         if not self.api_key:
             logger.warning(
@@ -106,6 +109,7 @@ class HypeDexerClient:
                     response = await client.get(url, headers=self._headers(), params=params)
 
                 if response.status_code == 200:
+                    self.auth_failed = False
                     return response.json()
 
                 if response.status_code == 429:
@@ -122,6 +126,7 @@ class HypeDexerClient:
                     logger.error(
                         f"HypeDexer 401 unauthorized — check HYPEDEXER_API_KEY"
                     )
+                    self.auth_failed = True
                     return None
 
                 # Other 4xx/5xx — log and retry once

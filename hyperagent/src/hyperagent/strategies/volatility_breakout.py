@@ -52,14 +52,21 @@ class VolatilityBreakoutStrategy(BaseStrategy):
     async def generate_signal(self, state: AgentState) -> Optional[Signal]:
         best_signal: Optional[Signal] = None
         best_score: float = 0
+        diag = self.tick
 
         for coin in config.MONITORED_ASSETS:
             price = state.prices.get(coin, 0)
             if not price:
+                if diag:
+                    diag.coins_skipped_no_data += 1
                 continue
+            if diag:
+                diag.coins_evaluated += 1
 
             candles = await self._fetch_candles(coin)
             if not candles or len(candles) < 25:
+                if diag:
+                    diag.reject("candles_missing")
                 continue
 
             closes = pd.Series([float(c["c"]) for c in candles])
@@ -73,27 +80,41 @@ class VolatilityBreakoutStrategy(BaseStrategy):
             atr_val = atr.iloc[-1]
 
             if atr_val <= 0:
+                if diag:
+                    diag.reject("atr_zero")
                 continue
 
             squeeze_active = self._detect_squeeze(closes, highs, lows)
 
             if not squeeze_active:
+                if diag:
+                    diag.reject("no_squeeze")
                 continue
 
             breakout_threshold = config.BREAKOUT_ATR_MULT * atr_val
 
             if len(candles) < 3:
+                if diag:
+                    diag.reject("candles_missing")
                 continue
             prev_candle = candles[-2]
             prev_o = float(prev_candle.get("o", 0))
             prev_c = float(prev_candle.get("c", 0))
             if prev_o <= 0:
+                if diag:
+                    diag.reject("bad_candle_data")
                 continue
 
             prev_move = prev_c - prev_o
             abs_move = abs(prev_move)
 
             if abs_move < breakout_threshold:
+                if diag:
+                    diag.reject("move_below_breakout")
+                    diag.note_candidate(
+                        coin, (abs_move / atr_val) * 20,
+                        f"move={abs_move/atr_val:.1f}x ATR (need {config.BREAKOUT_ATR_MULT}x)"
+                    )
                 continue
 
             latest = candles[-1]
@@ -108,6 +129,8 @@ class VolatilityBreakoutStrategy(BaseStrategy):
             vol_ratio = prev_vol / avg_vol if avg_vol > 0 else 1.0
 
             if vol_ratio < config.BREAKOUT_VOLUME_MULT:
+                if diag:
+                    diag.reject("volume_too_low")
                 continue
 
             direction = "LONG" if prev_move > 0 else "SHORT"
@@ -119,7 +142,16 @@ class VolatilityBreakoutStrategy(BaseStrategy):
 
             score = max(0, breakout_pts) + vol_pts + squeeze_pts + continuation_pts
 
-            if score <= best_score or score < 55:
+            if diag:
+                diag.note_candidate(
+                    coin, score, f"{direction} breakout score={score:.0f}"
+                )
+
+            if score < 55:
+                if diag:
+                    diag.reject("score_below_min")
+                continue
+            if score <= best_score:
                 continue
 
             best_score = score

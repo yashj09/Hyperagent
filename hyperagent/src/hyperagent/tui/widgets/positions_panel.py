@@ -28,10 +28,29 @@ class PositionsPanel(Static):
 
         positions = state.positions
         if not positions:
-            output.append(
-                "\n  No open positions.\n",
-                style="dim italic",
-            )
+            # Explain *why* it's empty so "No positions" doesn't look
+            # broken to a first-time user staring at a still screen.
+            # Three states: strategy not running (user hasn't hit Start),
+            # running but no signals yet (scanning), or running and
+            # actively evaluating (rare to observe but covered).
+            if not state.is_running:
+                output.append(
+                    "\n  No open positions.\n",
+                    style="dim italic",
+                )
+                output.append(
+                    "  Strategy is stopped. Press 's' → Start to begin.\n",
+                    style="dim",
+                )
+            else:
+                output.append(
+                    "\n  No open positions.\n",
+                    style="dim italic",
+                )
+                output.append(
+                    "  Strategy running — scanning for entries...\n",
+                    style="#3fb950",
+                )
             # Show account info if available
             if state.account_value > 0:
                 output.append(f"\n  Account Value: ", style="dim")

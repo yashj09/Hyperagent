@@ -56,6 +56,24 @@ Tab.-active {
     padding: 0 1;
 }
 
+#status-bar {
+    background: #161b22;
+    border: solid #30363d;
+    height: 3;
+    padding: 0 1;
+    margin-bottom: 1;
+    dock: top;
+}
+
+#strategy-tick-panel {
+    background: #0d1117;
+    border: solid #30363d;
+    height: 3;
+    padding: 0 1;
+    margin-bottom: 1;
+    dock: top;
+}
+
 #market-panel {
     background: #161b22;
     border: solid #30363d;

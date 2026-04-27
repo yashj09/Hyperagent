@@ -56,24 +56,41 @@ class PairsReversionStrategy(BaseStrategy):
     async def generate_signal(self, state: AgentState) -> Optional[Signal]:
         best_signal: Optional[Signal] = None
         best_zscore: float = 0
+        diag = self.tick
 
         for coin_a, coin_b in PAIRS:
             price_a = state.prices.get(coin_a)
             price_b = state.prices.get(coin_b)
             if not price_a or not price_b:
+                if diag:
+                    diag.coins_skipped_no_data += 1
                 continue
+            if diag:
+                diag.coins_evaluated += 1
 
             try:
                 z, corr, hedge_ratio = await self._compute_zscore(coin_a, coin_b)
             except Exception as e:
                 logger.debug(f"Pairs calc failed for {coin_a}/{coin_b}: {e}")
+                if diag:
+                    diag.reject("zscore_calc_failed")
                 continue
 
+            if diag:
+                diag.note_candidate(
+                    f"{coin_a}/{coin_b}", abs(z) * 25,
+                    f"z={z:+.2f} corr={corr:.2f}"
+                )
+
             if corr < config.PAIRS_MIN_CORRELATION:
+                if diag:
+                    diag.reject("correlation_too_low")
                 continue
 
             abs_z = abs(z)
             if abs_z < config.PAIRS_ZSCORE_ENTRY:
+                if diag:
+                    diag.reject("zscore_below_entry")
                 continue
 
             if abs_z <= best_zscore:
@@ -105,6 +122,8 @@ class PairsReversionStrategy(BaseStrategy):
 
             score = z_score_pts + corr_pts + funding_pts
             if score < 55:
+                if diag:
+                    diag.reject("score_below_min")
                 continue
 
             best_zscore = abs_z

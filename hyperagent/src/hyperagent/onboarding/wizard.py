@@ -339,32 +339,50 @@ def run_wizard(existing: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     print()
 
     # --- Step 7a: AI reasoning -------------------------------------------
+    # Loops below honor `skip` as an explicit escape hatch. The user may
+    # have answered "y" and then changed their mind (no key on hand,
+    # decided to use a different AWS account, etc.) — without this, the
+    # only way out was Ctrl-C, which dropped the entire wizard.
     print(_bold("7) AI trade explanations (optional)"))
     cfg: Dict[str, str] = {}
     if _yes_no(
         "Enable AI explanations via AWS Bedrock (Claude Haiku)?",
         default=bool(existing.get("AWS_ACCESS_KEY_ID")),
     ):
+        skipped = False
         while True:
-            cfg["AWS_ACCESS_KEY_ID"] = _prompt(
-                "  AWS_ACCESS_KEY_ID",
+            raw = _prompt(
+                "  AWS_ACCESS_KEY_ID (or type 'skip')",
                 default=existing.get("AWS_ACCESS_KEY_ID") or None,
             )
-            if cfg["AWS_ACCESS_KEY_ID"]:
+            if raw.lower() == "skip":
+                print(_dim("  skipped — AI disabled, run `hyperagent setup` later to add"))
+                skipped = True
                 break
-            print(_red("  required — answer 'n' at the previous step to skip AI"))
-        while True:
-            secret = getpass.getpass(
-                "  AWS_SECRET_ACCESS_KEY (hidden) > "
-            ).strip() or existing.get("AWS_SECRET_ACCESS_KEY", "")
-            if secret:
-                cfg["AWS_SECRET_ACCESS_KEY"] = secret
+            if raw:
+                cfg["AWS_ACCESS_KEY_ID"] = raw
                 break
-            print(_red("  required — answer 'n' at the previous step to skip AI"))
-        cfg["AWS_DEFAULT_REGION"] = _prompt(
-            "  AWS_DEFAULT_REGION",
-            default=existing.get("AWS_DEFAULT_REGION") or "us-east-1",
-        )
+            print(_red("  required — enter a key or type 'skip' to disable AI"))
+        if not skipped:
+            while True:
+                raw = getpass.getpass(
+                    "  AWS_SECRET_ACCESS_KEY (hidden, or type 'skip') > "
+                ).strip()
+                if raw.lower() == "skip":
+                    print(_dim("  skipped — AI disabled"))
+                    cfg.pop("AWS_ACCESS_KEY_ID", None)  # don't save a half-config
+                    skipped = True
+                    break
+                secret = raw or existing.get("AWS_SECRET_ACCESS_KEY", "")
+                if secret:
+                    cfg["AWS_SECRET_ACCESS_KEY"] = secret
+                    break
+                print(_red("  required — enter a secret or type 'skip' to disable AI"))
+        if not skipped:
+            cfg["AWS_DEFAULT_REGION"] = _prompt(
+                "  AWS_DEFAULT_REGION",
+                default=existing.get("AWS_DEFAULT_REGION") or "us-east-1",
+            )
     print()
 
     # --- Step 7b: HypeDexer ----------------------------------------------
@@ -374,13 +392,17 @@ def run_wizard(existing: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         default=bool(existing.get("HYPEDEXER_API_KEY")),
     ):
         while True:
-            key = getpass.getpass(
-                "  HYPEDEXER_API_KEY (hidden) > "
-            ).strip() or existing.get("HYPEDEXER_API_KEY", "")
+            raw = getpass.getpass(
+                "  HYPEDEXER_API_KEY (hidden, or type 'skip') > "
+            ).strip()
+            if raw.lower() == "skip":
+                print(_dim("  skipped — cascade v2 disabled"))
+                break
+            key = raw or existing.get("HYPEDEXER_API_KEY", "")
             if key:
                 cfg["HYPEDEXER_API_KEY"] = key
                 break
-            print(_red("  required — answer 'n' at the previous step to skip"))
+            print(_red("  required — enter a key or type 'skip' to disable cascade v2"))
     print()
 
     # --- Step 8: Summary + confirm ---------------------------------------

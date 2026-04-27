@@ -94,6 +94,11 @@ class HyperAgentApp(App):
             "liquidation_cascade_v2": LiquidationCascadeV2Strategy(self.client.info, self.candle_cache),
         }
         self.ai_wrapper: AIWrapper | None = None
+        self._last_ai_error_logged: Optional[str] = None
+        # Tracks whether we've already warned the user about a slow Bedrock
+        # call this slowdown window. Reset when latency recovers, so a
+        # fresh slowdown produces a fresh warning.
+        self._ai_slow_warned: bool = False
 
         self._prev_prices: dict = {}
 
@@ -321,7 +326,10 @@ class HyperAgentApp(App):
 
                 # Fetch OI and funding from meta — surfaced in analytics and
                 # used by funding-carry / regime-detection paths.
-                # The client returns {} on rate-limit, so we just skip silently.
+                # The client returns {} on rate-limit; other failures (SDK
+                # shape change, malformed response) must not kill the price
+                # loop but also must not stay invisible — funding_sniper
+                # silently trading on stale funding is worse than a loud log.
                 try:
                     meta = asyncio.run(self.client.get_meta_and_asset_ctxs())
                     if meta and len(meta) > 1:
@@ -337,8 +345,11 @@ class HyperAgentApp(App):
                                     funding = ctx.get("funding")
                                     if funding:
                                         self.state.funding_rates[coin] = float(funding)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.exception("meta/funding fetch failed")
+                    self.state.add_log(
+                        f"[PRICE] funding/OI fetch error: {str(exc)[:80]}"
+                    )
 
                 # Try to fetch account info (client returns {} on rate-limit).
                 try:
@@ -353,8 +364,11 @@ class HyperAgentApp(App):
                         )
                         avail = self.state.account_value - self.state.available_margin
                         self.state.available_margin = max(0, avail)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.exception("account info fetch failed")
+                    self.state.add_log(
+                        f"[PRICE] account info fetch error: {str(exc)[:80]}"
+                    )
 
             except Exception as exc:
                 msg = str(exc)
@@ -393,12 +407,64 @@ class HyperAgentApp(App):
                     time.sleep(1)
                     continue
 
+                # Attach a fresh diagnostics record BEFORE invoking the
+                # strategy. The strategy mutates it via reject()/note_candidate()
+                # so the dashboard can render *why* a tick produced no signal.
+                # Binding before the AIWrapper call is important because the
+                # wrapper delegates to `self.strategy.generate_signal`, which
+                # reads `self.tick` on the inner strategy — not on the wrapper.
+                diag = strategy.begin_tick(strategy_name)
+
                 if self.state.ai_enabled:
                     if not self.ai_wrapper or self.ai_wrapper.strategy is not strategy:
                         self.ai_wrapper = AIWrapper(strategy)
+                        self._last_ai_error_logged = None
                     signal = asyncio.run(self.ai_wrapper.generate_signal(self.state))
+                    # Surface AI failures to the TUI log, but only when the
+                    # error *changes* — otherwise we'd spam every 15s loop.
+                    err = self.ai_wrapper.last_error
+                    if err and err != self._last_ai_error_logged:
+                        self.state.add_log(
+                            f"[AI] Reasoning unavailable: {err[:80]} — "
+                            f"check AWS creds (run `hyperagent setup`)"
+                        )
+                        self._last_ai_error_logged = err
+                    elif not err:
+                        self._last_ai_error_logged = None
+                    # One-time warning when Bedrock is slow. Threshold tuned
+                    # so we don't nag on typical 1-2s completions.
+                    latency = self.ai_wrapper.last_latency_ms
+                    if latency and latency > 3000 and not self._ai_slow_warned:
+                        self.state.add_log(
+                            f"[AI] Bedrock call took {latency}ms — "
+                            f"region cold-start or slow network; loop will feel slower"
+                        )
+                        self._ai_slow_warned = True
+                    elif latency and latency < 2000:
+                        # Reset the warning if performance recovers, so a
+                        # future slowdown gets flagged again.
+                        self._ai_slow_warned = False
                 else:
                     signal = asyncio.run(strategy.generate_signal(self.state))
+
+                # Finalize the diagnostics record and publish it atomically.
+                # Single pointer-swap — dashboard readers get a consistent
+                # snapshot without needing a lock.
+                diag.finished_at = time.time()
+                if signal:
+                    diag.signal_fired = True
+                    diag.signal_coin = signal.coin
+                    diag.signal_direction = signal.direction
+                    diag.signal_score = signal.score
+                self.state.last_tick = diag
+                self.state.last_tick_time = diag.finished_at
+
+                # Compact one-line heartbeat — proves the loop is alive AND
+                # shows the user WHY nothing fired. One line per tick so the
+                # 100-line log buffer isn't flooded.
+                self.state.add_log(
+                    f"[TICK {strategy_name} {diag.elapsed_ms}ms] {diag.summary()}"
+                )
 
                 if signal:
                     self.state.active_signals.append(signal)
@@ -947,6 +1013,7 @@ class HyperAgentApp(App):
         time.sleep(5)  # Let price feed warm up first
 
         stats_log_counter = 0
+        auth_alerted = False  # log HYPEDEXER auth failure at most once
         while not self._shutting_down:
             try:
                 stats = asyncio.run(
@@ -954,6 +1021,17 @@ class HyperAgentApp(App):
                 )
                 self.state.liquidation_stats = stats
                 self.state.liquidation_stats_updated = time.time()
+
+                # Surface HypeDexer auth failure exactly once per auth-state
+                # transition. Clears when auth recovers.
+                if self.hypedexer.auth_failed and not auth_alerted:
+                    self.state.add_log(
+                        "[LIQ] HYPEDEXER_API_KEY rejected (401) — cascade v2 "
+                        "running without fresh data. Run `hyperagent setup`."
+                    )
+                    auth_alerted = True
+                elif not self.hypedexer.auth_failed:
+                    auth_alerted = False
 
                 # Log significant cascades only (to keep noise down)
                 for coin, s in stats.items():
@@ -1013,6 +1091,12 @@ class HyperAgentApp(App):
         self.state.add_log(
             f"[STRATEGY] Switched to: {event.strategy}"
         )
+        # Invalidate the old strategy's tick record so the dashboard shows
+        # "awaiting first scan" instead of a stale tick from the previous
+        # strategy (which would display the wrong strategy name and gate
+        # counts until the new strategy's first loop completes).
+        self.state.last_tick = None
+        self.state.last_tick_time = 0.0
 
     def on_strategy_config_screen_strategy_toggled(
         self, event: StrategyConfigScreen.StrategyToggled
@@ -1041,8 +1125,15 @@ def _config_is_complete() -> bool:
     We treat "no agent key" as "run the wizard". HL_MAIN_ADDRESS is
     recommended but optional — single-key mode still works for legacy
     setups (see core/client.py).
+
+    Also rejects a present-but-malformed key: a hand-edited .env with a
+    truncated / garbled key would otherwise pass this check and crash at
+    the first signing attempt with a cryptic eth_account error.
     """
-    return bool(config.HL_AGENT_PRIVATE_KEY)
+    from hyperagent.onboarding.validators import is_valid_private_key
+    return bool(config.HL_AGENT_PRIVATE_KEY) and is_valid_private_key(
+        config.HL_AGENT_PRIVATE_KEY
+    )
 
 
 def _run_setup_flow(force: bool = False) -> None:
@@ -1101,9 +1192,16 @@ def main() -> None:
         _run_setup_flow(force=False)
 
     if not _config_is_complete():
-        # Wizard ran but config still missing — should only happen if the
-        # user skipped it somehow. Bail clearly.
-        print("No agent wallet configured. Run `hyperagent setup` to set one up.")
+        # Either the key is missing or it's malformed (hand-edited .env).
+        # Tell the user which, so a truncated-key copy-paste doesn't loop
+        # them through the wizard with no explanation of what went wrong.
+        if not config.HL_AGENT_PRIVATE_KEY:
+            print("No agent wallet configured. Run `hyperagent setup` to set one up.")
+        else:
+            print(
+                "HL_AGENT_PRIVATE_KEY is malformed (expected 0x + 64 hex chars). "
+                "Run `hyperagent setup` to regenerate."
+            )
         raise SystemExit(1)
 
     app = HyperAgentApp()

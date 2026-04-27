@@ -50,14 +50,40 @@ class FundingSniperStrategy(BaseStrategy):
     async def generate_signal(self, state: AgentState) -> Optional[Signal]:
         best_signal: Optional[Signal] = None
         best_abs_rate: float = 0
+        diag = self.tick
 
-        if not self._near_settlement():
+        # Funding only settles hourly on Hyperliquid, so there's no point
+        # running the full scan mid-hour. Surface this to the user as an
+        # explicit blocker with countdown — otherwise the dashboard looks
+        # identical to "strategy hung".
+        now = time.time()
+        seconds_into_hour = now % 3600
+        seconds_to_next = 3600 - seconds_into_hour
+        if seconds_to_next > config.FUNDING_SETTLEMENT_WINDOW:
+            minutes_away = int(seconds_to_next / 60)
+            if diag:
+                diag.blocker = (
+                    f"waiting for funding settlement window "
+                    f"(~{minutes_away}m away, opens {config.FUNDING_SETTLEMENT_WINDOW // 60}m before next hour)"
+                )
             return None
 
         for coin in config.MONITORED_ASSETS:
             funding = state.funding_rates.get(coin, 0)
             price = state.prices.get(coin, 0)
-            if not price or abs(funding) < config.FUNDING_THRESHOLD:
+            if not price:
+                if diag:
+                    diag.coins_skipped_no_data += 1
+                continue
+            if diag:
+                diag.coins_evaluated += 1
+                diag.note_candidate(
+                    coin, abs(funding) * 100000, f"funding={funding:+.4%}"
+                )
+
+            if abs(funding) < config.FUNDING_THRESHOLD:
+                if diag:
+                    diag.reject("funding_too_low")
                 continue
 
             abs_rate = abs(funding)
@@ -71,6 +97,8 @@ class FundingSniperStrategy(BaseStrategy):
 
             trend_ok = await self._check_trend_filter(coin, direction)
             if not trend_ok:
+                if diag:
+                    diag.reject("trend_against_carry")
                 continue
 
             if abs_rate >= config.FUNDING_HIGH_THRESHOLD:
@@ -101,12 +129,6 @@ class FundingSniperStrategy(BaseStrategy):
             )
 
         return best_signal
-
-    def _near_settlement(self) -> bool:
-        now = time.time()
-        seconds_into_hour = now % 3600
-        seconds_to_next = 3600 - seconds_into_hour
-        return seconds_to_next <= config.FUNDING_SETTLEMENT_WINDOW
 
     async def _check_trend_filter(self, coin: str, direction: str) -> bool:
         try:

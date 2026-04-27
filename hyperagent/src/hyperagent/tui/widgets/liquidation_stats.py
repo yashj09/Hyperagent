@@ -29,6 +29,10 @@ class LiquidationStatsPanel(Static):
             id="liquidation-stats-panel",
             **kwargs,
         )
+        # Widget birth time — used to distinguish "poller is warming up
+        # normally" from "poller has been silent for minutes". Reset if
+        # the widget is remounted, which is fine — fresh birth, fresh age.
+        self._birth_ts = time.time()
 
     def update_stats(self, state: AgentState):
         output = Text()
@@ -49,10 +53,36 @@ class LiquidationStatsPanel(Static):
 
         stats = state.liquidation_stats
         if not stats:
-            output.append(
-                "\n  No liquidation data yet. HypeDexer poller warming up...\n",
-                style="dim italic",
-            )
+            # Age-based warm-up copy. The poller runs every
+            # HYPEDEXER_POLL_INTERVAL (30s) and the first poll fetches a
+            # full hour window, so initial empty is normal up to ~60s.
+            # Beyond that, something's likely wrong — point the user at
+            # the fix. Uses widget birth rather than boot so a remount
+            # doesn't lie about elapsed time.
+            age_s = int(time.time() - self._birth_ts)
+            if age_s < 60:
+                output.append(
+                    f"\n  Warming up ({age_s}s)... HypeDexer poller fetching first window.\n",
+                    style="dim italic",
+                )
+            elif age_s < 300:
+                output.append(
+                    f"\n  Still fetching ({age_s//60}m {age_s%60}s elapsed).\n",
+                    style="dim italic",
+                )
+                output.append(
+                    "  Normal if there's low liquidation volume; data should appear shortly.\n",
+                    style="dim",
+                )
+            else:
+                output.append(
+                    f"\n  [warn] stalled {age_s//60}m — HypeDexer poller may be unhealthy.\n",
+                    style="bold #d29922",
+                )
+                output.append(
+                    "  Check HYPEDEXER_API_KEY or run `hyperagent setup` to re-enter it.\n",
+                    style="dim",
+                )
             self.update(output)
             return
 
