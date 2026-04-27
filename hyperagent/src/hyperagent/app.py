@@ -689,7 +689,7 @@ class HyperAgentApp(App):
         if path is None or not path.is_file():
             return
         try:
-            lines = path.read_text().splitlines()
+            lines = path.read_text(encoding="utf-8").splitlines()
             new_lines = []
             found = False
             for line in lines:
@@ -700,7 +700,7 @@ class HyperAgentApp(App):
                     new_lines.append(line)
             if not found:
                 new_lines.append("HL_RECONCILE_ON_BOOT=0")
-            path.write_text("\n".join(new_lines) + "\n")
+            path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
         except OSError as exc:
             logger.warning("Could not clear reconcile flag: %s", exc)
 
