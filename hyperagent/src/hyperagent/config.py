@@ -31,9 +31,36 @@ def locate_env_file() -> Path | None:
     return None
 
 
+def _safe_load_dotenv(path: Path) -> None:
+    """Load a .env file, self-healing cp1252-encoded files written by older
+    Windows installs (which crashed python-dotenv's UTF-8 reader)."""
+    try:
+        load_dotenv(path)
+        return
+    except UnicodeDecodeError:
+        pass
+
+    try:
+        text = path.read_text(encoding="cp1252")
+    except (OSError, UnicodeDecodeError):
+        logger.warning(
+            "Could not decode %s as UTF-8 or cp1252. Skipping; run "
+            "`hyperagent setup` to regenerate it.", path,
+        )
+        return
+
+    try:
+        path.write_text(text, encoding="utf-8")
+    except OSError as exc:
+        logger.warning("Could not rewrite %s as UTF-8: %s", path, exc)
+        return
+
+    load_dotenv(path)
+
+
 ENV_FILE_PATH: Path | None = locate_env_file()
 if ENV_FILE_PATH is not None:
-    load_dotenv(ENV_FILE_PATH)
+    _safe_load_dotenv(ENV_FILE_PATH)
 
 MAINNET_API_URL = "https://api.hyperliquid.xyz"
 TESTNET_API_URL = "https://api.hyperliquid-testnet.xyz"
@@ -194,6 +221,7 @@ AI_ENABLED_DEFAULT = False
 AI_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 AI_MAX_TOKENS = 200
 AWS_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
 
 DASHBOARD_REFRESH_RATE = 1
 LOG_MAX_LINES = 100

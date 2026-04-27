@@ -10,14 +10,14 @@ HyperAgent is an interactive terminal-based trading agent that watches the marke
 
 You pick a strategy. You hit Start. It trades by itself.
 
-## Install
+## Quick Install (if you already have Python + pipx)
 
 ```bash
 pipx install hyperliquidagent
 hyperagent
 ```
 
-That's it. First run launches a short setup wizard (asks for your main wallet address and an agent-wallet private key — see [Safety](#safety) below), then drops you into the TUI.
+First run launches a short setup wizard (asks for your main wallet address and an agent-wallet private key — see [Safety](#safety) below), then drops you into the TUI.
 
 Upgrade any time:
 
@@ -25,7 +25,186 @@ Upgrade any time:
 pipx upgrade hyperliquidagent
 ```
 
-Don't have `pipx`? [Install it in 30 seconds](https://pipx.pypa.io/stable/installation/).
+**Never used Python before?** Jump to [Beginner Setup](#beginner-setup-no-python-no-problem) — it walks you through everything from scratch.
+
+---
+
+## Beginner Setup (no Python? no problem)
+
+If you've never run a Python script, installed a CLI tool, or used a terminal before, follow this section from top to bottom. It takes ~10 minutes.
+
+### 1. Prerequisites
+
+You need three things on your computer:
+
+1. **Python 3.9 or newer** — the language HyperAgent is written in
+2. **pipx** — a tool that installs Python CLI apps cleanly (so they don't clash with anything else)
+3. **A terminal** — Command Prompt / PowerShell on Windows, Terminal on macOS, any shell on Linux
+
+You also need:
+- A **crypto wallet** (MetaMask, Rabby, etc.) with a testnet-capable address
+- ~10 minutes and an internet connection
+
+### 2. Install Python
+
+#### Windows
+
+1. Go to [python.org/downloads](https://www.python.org/downloads/) and download the latest Python 3.12+ installer.
+2. Run the installer. **Check the box that says "Add python.exe to PATH"** at the bottom of the first screen before clicking Install. This is the single most common thing beginners miss.
+3. Open **PowerShell** (press `Win` key, type `powershell`, hit Enter) and verify:
+   ```powershell
+   python --version
+   ```
+   You should see `Python 3.12.x` or similar. If you see "command not found", close PowerShell, reopen it, and try again. If still broken, reinstall Python and double-check the PATH box.
+
+#### macOS
+
+Easiest path is [Homebrew](https://brew.sh):
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+brew install python
+python3 --version
+```
+
+#### Linux
+
+Most distros ship Python 3. Verify with `python3 --version`. If missing:
+
+```bash
+# Debian/Ubuntu
+sudo apt update && sudo apt install python3 python3-pip python3-venv
+# Fedora
+sudo dnf install python3 python3-pip
+```
+
+### 3. Install pipx
+
+`pipx` installs command-line Python tools into their own sandbox so they don't break each other.
+
+#### Windows (PowerShell)
+
+```powershell
+python -m pip install --user pipx
+python -m pipx ensurepath
+```
+
+**Close and reopen PowerShell** after this. `ensurepath` adds pipx to your PATH, but existing shells won't see the change.
+
+#### macOS
+
+```bash
+brew install pipx
+pipx ensurepath
+```
+
+#### Linux
+
+```bash
+python3 -m pip install --user pipx
+python3 -m pipx ensurepath
+```
+
+Verify pipx works by running `pipx --version` in a fresh terminal window.
+
+### 4. Install HyperAgent
+
+Now the actual app. In your terminal:
+
+```bash
+pipx install hyperliquidagent
+```
+
+You should see pipx download the package and print something like `installed package hyperliquidagent 0.1.x`. If you ever need to update:
+
+```bash
+pipx upgrade hyperliquidagent
+```
+
+### 5. Get Testnet USDC
+
+HyperAgent only trades Hyperliquid **testnet**, which uses play-money USDC. To fund your testnet wallet:
+
+1. Visit [app.hyperliquid-testnet.xyz](https://app.hyperliquid-testnet.xyz).
+2. Connect your wallet (MetaMask, Rabby, etc.).
+3. Click the faucet / "Claim testnet USDC" option. You'll get free testnet funds — no real money moves.
+
+### 6. Generate an Agent Wallet (read this carefully)
+
+HyperAgent **never** asks for your main wallet's private key. Instead, you create a disposable "agent key" that can only place/cancel trades — Hyperliquid's exchange itself blocks it from withdrawing funds.
+
+1. Go to [app.hyperliquid-testnet.xyz/API](https://app.hyperliquid-testnet.xyz/API).
+2. Click **Generate**.
+3. A `approveAgent` transaction pops up in your wallet. Sign it with your main wallet — this tells Hyperliquid "this agent key is allowed to trade on my behalf."
+4. Copy the **agent private key** shown on screen (long hex string starting with `0x…`). Save it somewhere safe for now; you'll paste it into the wizard in step 8.
+5. Also copy your **main wallet address** (the public `0x…` address you signed with).
+
+You can revoke the agent key any time from the same page — one click, no email, no support ticket.
+
+### 7. (Optional) Get a HypeDexer API Key
+
+Only needed if you want to use the **Liquidation Cascade v2** strategy. Skip this section otherwise — every other strategy works without it.
+
+1. Go to [app.hypedexer.com/dashboard/keys](https://www.app.hypedexer.com/dashboard/keys).
+2. Sign in / create an account.
+3. Click **Create API Key** (or similar — the button on the Keys dashboard).
+4. Give it a name like `hyperagent` and create it.
+5. Copy the generated key. You'll paste it into the wizard when it asks for `HYPEDEXER_API_KEY`.
+
+Keep this key private — treat it like a password. If it leaks, revoke it from the same dashboard.
+
+### 8. (Optional) AWS Bedrock Credentials for AI Explanations
+
+Only needed if you want Claude Haiku to explain trades in plain English. Skip if you don't care.
+
+You need an AWS account with Bedrock access to Claude Haiku enabled. You'll be prompted for:
+- `AWS_ACCESS_KEY_ID`
+- `AWS_SECRET_ACCESS_KEY`
+- `AWS_DEFAULT_REGION` (default `us-east-1`)
+
+### 9. Run the Setup Wizard
+
+In your terminal:
+
+```bash
+hyperagent
+```
+
+The wizard will prompt you, one at a time, for:
+
+| Prompt | Paste here |
+|---|---|
+| Main wallet address | The `0x…` public address from step 6 |
+| Agent private key (hidden) | The agent key from step 6 |
+| Enable AI? | `y` if you did step 8, else `n` |
+| Enable HypeDexer? | `y` if you did step 7, else `n` |
+
+Input is hidden for sensitive fields (you won't see the key as you type/paste — that's normal).
+
+When done, HyperAgent saves config to:
+- **Windows**: `C:\Users\<you>\.config\hyperagent\.env`
+- **macOS/Linux**: `~/.config/hyperagent/.env`
+
+…with restrictive file permissions (`chmod 600` on Unix).
+
+### 10. Trade
+
+You'll land in the TUI. Pick a strategy from the dropdown, hit **Start**, and watch it go. Use the keybindings below to navigate.
+
+To reconfigure later (rotate keys, add AWS creds, etc.):
+
+```bash
+hyperagent setup
+```
+
+### Troubleshooting
+
+- **`hyperagent: command not found`** after `pipx install` — close and reopen your terminal. If still missing, run `pipx ensurepath` again, then reopen.
+- **`'utf-8' codec can't decode byte …`** on startup — your `.env` file got saved with non-UTF-8 encoding (common on Windows if edited in Notepad with a legacy codepage). Delete it and re-run `hyperagent setup`:
+  - Windows: `del C:\Users\<you>\.config\hyperagent\.env`
+  - macOS/Linux: `rm ~/.config/hyperagent/.env`
+- **Python not found on Windows** — reinstall Python and make sure "Add python.exe to PATH" is checked. Or use `py -3` instead of `python`.
+- **`pipx install` fails with SSL errors** — you're behind a corporate proxy; try from a personal network.
 
 ## Safety
 
@@ -101,28 +280,7 @@ Every second, HyperAgent:
 
 ---
 
-## Getting started (full walkthrough)
-
-1. **Install**: `pipx install hyperliquidagent`
-2. **Get testnet USDC**: go to [app.hyperliquid-testnet.xyz](https://app.hyperliquid-testnet.xyz), connect your wallet, hit the faucet.
-3. **Generate an agent wallet**: go to [app.hyperliquid-testnet.xyz/API](https://app.hyperliquid-testnet.xyz/API), click **Generate**, sign the `approveAgent` transaction with your main wallet, copy the agent private key shown on screen.
-4. **Run** `hyperagent`. The wizard asks for:
-   - Network (testnet only in this version)
-   - Your main wallet address (public, `0x…`)
-   - The agent private key you just copied (hidden input)
-   - Optional AWS Bedrock creds for AI explanations
-   - Optional HypeDexer key for the Liquidation Cascade v2 strategy
-5. **Trade**: pick a strategy, hit Start.
-
-Config is saved to `~/.config/hyperagent/.env` with `chmod 600`.
-
-To reconfigure later (rotate the agent key, add AWS creds, etc.):
-
-```bash
-hyperagent setup
-```
-
-### Run from source (contributors)
+## Run from source (contributors)
 
 ```bash
 git clone https://github.com/yashj09/Hyperagent

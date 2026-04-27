@@ -11,6 +11,7 @@ from textual.containers import Container, Horizontal, VerticalScroll
 from textual.widgets import Static, RichLog
 from rich.text import Text
 
+from hyperagent import config
 from hyperagent.core.state import AgentState
 from hyperagent.tui.widgets.market_ticker import MarketTicker
 from hyperagent.tui.widgets.liquidation_stats import LiquidationStatsPanel
@@ -31,6 +32,14 @@ class AIPanel(Static):
             output.append("  AI is OFF. Press ", style="dim")
             output.append("'a'", style="bold yellow")
             output.append(" to enable.\n", style="dim")
+            self.update(output)
+            return
+
+        if not config.AWS_ACCESS_KEY_ID:
+            output.append("  AI is not configured.\n", style="bold #d29922")
+            output.append("  Run ", style="dim")
+            output.append("`hyperagent setup`", style="bold yellow")
+            output.append(" to add AWS Bedrock credentials.\n", style="dim")
             self.update(output)
             return
 

@@ -345,13 +345,22 @@ def run_wizard(existing: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         "Enable AI explanations via AWS Bedrock (Claude Haiku)?",
         default=bool(existing.get("AWS_ACCESS_KEY_ID")),
     ):
-        cfg["AWS_ACCESS_KEY_ID"] = _prompt(
-            "  AWS_ACCESS_KEY_ID",
-            default=existing.get("AWS_ACCESS_KEY_ID") or None,
-        )
-        cfg["AWS_SECRET_ACCESS_KEY"] = getpass.getpass(
-            "  AWS_SECRET_ACCESS_KEY (hidden) > "
-        ).strip() or existing.get("AWS_SECRET_ACCESS_KEY", "")
+        while True:
+            cfg["AWS_ACCESS_KEY_ID"] = _prompt(
+                "  AWS_ACCESS_KEY_ID",
+                default=existing.get("AWS_ACCESS_KEY_ID") or None,
+            )
+            if cfg["AWS_ACCESS_KEY_ID"]:
+                break
+            print(_red("  required — answer 'n' at the previous step to skip AI"))
+        while True:
+            secret = getpass.getpass(
+                "  AWS_SECRET_ACCESS_KEY (hidden) > "
+            ).strip() or existing.get("AWS_SECRET_ACCESS_KEY", "")
+            if secret:
+                cfg["AWS_SECRET_ACCESS_KEY"] = secret
+                break
+            print(_red("  required — answer 'n' at the previous step to skip AI"))
         cfg["AWS_DEFAULT_REGION"] = _prompt(
             "  AWS_DEFAULT_REGION",
             default=existing.get("AWS_DEFAULT_REGION") or "us-east-1",
@@ -364,9 +373,14 @@ def run_wizard(existing: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         "Enable the Liquidation Cascade v2 strategy (needs HypeDexer API key)?",
         default=bool(existing.get("HYPEDEXER_API_KEY")),
     ):
-        cfg["HYPEDEXER_API_KEY"] = getpass.getpass(
-            "  HYPEDEXER_API_KEY (hidden) > "
-        ).strip() or existing.get("HYPEDEXER_API_KEY", "")
+        while True:
+            key = getpass.getpass(
+                "  HYPEDEXER_API_KEY (hidden) > "
+            ).strip() or existing.get("HYPEDEXER_API_KEY", "")
+            if key:
+                cfg["HYPEDEXER_API_KEY"] = key
+                break
+            print(_red("  required — answer 'n' at the previous step to skip"))
     print()
 
     # --- Step 8: Summary + confirm ---------------------------------------
