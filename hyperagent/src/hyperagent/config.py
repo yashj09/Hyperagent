@@ -188,6 +188,20 @@ STOP_LOSS_POLL_INTERVAL = 3
 PRICE_POLL_INTERVAL = 5
 STRATEGY_POLL_INTERVAL = 15
 
+# --- Coaching / tuning suggestions ---
+# After this many consecutive silent ticks (no signal), the Strategy tab
+# shows a "Tuning suggestions" panel pointing at params to loosen. At the
+# default 15s poll, 20 ticks = ~5 minutes.
+SUGGESTIONS_STALE_TICKS = 20
+# After this many, we also probe OTHER strategies (funding_carry,
+# liquidation_cascade_v2) to see if one would signal on current data and
+# surface a "try a different strategy" hint. 40 ticks = ~10 minutes.
+SUGGESTIONS_STALE_TICKS_STRONG = 40
+# Seconds between re-emitting the "Silent for Nm — see Tuning suggestions"
+# dashboard log line. Users who missed the first line (joined mid-session,
+# scrolled past it) get a fresh reminder at this cadence.
+SUGGESTIONS_REPEAT_INTERVAL_SEC = 300
+
 # --- HypeDexer (third-party indexed data) ---
 HYPEDEXER_API_KEY = os.getenv("HYPEDEXER_API_KEY", "")
 HYPEDEXER_BASE_URL = "https://api.hypedexer.com"

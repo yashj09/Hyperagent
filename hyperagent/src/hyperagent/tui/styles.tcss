@@ -68,7 +68,9 @@ Tab.-active {
 #strategy-tick-panel {
     background: #0d1117;
     border: solid #30363d;
-    height: 3;
+    height: auto;
+    min-height: 3;
+    max-height: 5;
     padding: 0 1;
     margin-bottom: 1;
     dock: top;
@@ -324,6 +326,15 @@ Tab.-active {
 #strategy-params-table > .datatable--cursor {
     background: #1f6feb;
     color: #ffffff;
+}
+
+#suggestions-panel {
+    background: #161b22;
+    border: solid #d29922;
+    padding: 0 1;
+    margin-top: 1;
+    height: auto;
+    min-height: 3;
 }
 
 /* ===== Journal Screen ===== */

@@ -199,6 +199,33 @@ class StrategyTickPanel(Static):
             ai_color = "#d29922" if tick.ai_latency_ms > 3000 else "#a371f7"
             output.append(f"  AI+{tick.ai_latency_ms}ms", style=ai_color)
 
+        # Inline coaching line — shown when the strategy has been silent
+        # long enough for the worker to populate state.active_suggestions.
+        # Dashboard-tab users never visit Strategy until they know they
+        # should; this 2nd line is that nudge.
+        top_suggestion = None
+        for s in state.active_suggestions:
+            if s.config_key is not None:
+                top_suggestion = s
+                break
+        if top_suggestion is not None:
+            output.append("\n", style="dim")
+            output.append("↳ ", style="#d29922")
+            output.append("Tune: ", style="bold #d29922")
+            output.append(top_suggestion.label, style="bold white")
+            output.append(f"  {top_suggestion.current_display}", style="dim")
+            output.append(" → try ", style="dim")
+            output.append(top_suggestion.suggested_display, style="bold #3fb950")
+            output.append("   Press ", style="dim")
+            output.append("s", style="bold #58a6ff")
+            output.append(" for Strategy tab to edit", style="dim")
+        elif state.active_alternatives:
+            # No tunable suggestion (e.g. all info rows) but we DO have an
+            # alt-strategy hint — show that instead so the line isn't wasted.
+            output.append("\n", style="dim")
+            output.append("↳ ", style="#a371f7")
+            output.append(state.active_alternatives[0], style="#a371f7")
+
         self.update(output)
 
 

@@ -24,6 +24,7 @@ from typing import Any, Optional
 from textual.containers import Container, Horizontal, Vertical
 from textual.widgets import Static, Select, Switch, Button, DataTable, Label
 from textual.message import Message
+from rich.text import Text
 
 from hyperagent.core.state import AgentState
 from hyperagent.tui.param_schema import ParamSpec, check_invariants, get_specs_for, get_spec_by_key
@@ -175,11 +176,29 @@ class StrategyConfigScreen(Container):
 
         yield DataTable(id="strategy-params-table", cursor_type="row")
 
+        # Tuning-suggestions panel — hidden by default, appears below the
+        # params table after the active strategy has been silent for
+        # SUGGESTIONS_STALE_TICKS consecutive ticks. Reads live gate
+        # counts from state.last_tick and resolves them to param nudges
+        # via tuning_advice.suggest(). Zero action on its own — it tells
+        # the user WHICH row to click in the table above.
+        yield Static(
+            "",
+            id="suggestions-panel",
+        )
+
     def on_mount(self):
         table = self.query_one("#strategy-params-table", DataTable)
         table.add_columns("Parameter", "Value")
         table.zebra_stripes = True
         self._populate_params_table(self.state.active_strategy)
+        # Start hidden — we only know whether to show it once we have
+        # tick data, and we never have any at mount time.
+        try:
+            panel = self.query_one("#suggestions-panel", Static)
+            panel.display = False
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Table population
@@ -247,6 +266,10 @@ class StrategyConfigScreen(Container):
             desc_widget.update(STRATEGY_DESCRIPTIONS.get(strategy, ""))
 
             self._populate_params_table(strategy)
+            # App.on_strategy_config_screen_strategy_changed resets
+            # coaching state (state.silent_tick_count / active_suggestions)
+            # so _update_suggestions() will naturally hide the panel on
+            # the next refresh. No local counter to clear.
             self.post_message(self.StrategyChanged(strategy))
 
     def on_switch_changed(self, event: Switch.Changed):
@@ -270,6 +293,9 @@ class StrategyConfigScreen(Container):
                 self.state.add_log("[STRATEGY] Stopped by user")
                 btn.label = "Start Strategy"
                 btn.variant = "success"
+                # Coaching state cleared by
+                # App.on_strategy_config_screen_strategy_toggled; the
+                # panel auto-hides on the next UI refresh.
             else:
                 self.state.is_running = True
                 self.state.status_message = "Running"
@@ -359,6 +385,70 @@ class StrategyConfigScreen(Container):
                 sw.value = state.ai_enabled
         except Exception:
             pass
+        # Update the staleness counter and render the suggestions panel.
+        # Kept entirely in refresh_state (vs. inside the strategy worker)
+        # so the counter clock is tied to UI refresh, not strategy cadence
+        # — which means switching tabs still lets the counter progress
+        # based on how many real ticks happened.
+        self._update_suggestions()
+
+    # ------------------------------------------------------------------
+    # Tuning suggestions
+    # ------------------------------------------------------------------
+
+    def _update_suggestions(self) -> None:
+        """Re-render the SuggestionsPanel from state-backed coaching data.
+
+        All computation happens in app._update_coaching_surface (runs on
+        the strategy worker thread, once per tick). This method just
+        reads state.active_suggestions / active_alternatives and renders.
+        Keeps the screen passive — no duplicate tick-counting logic.
+        """
+        try:
+            panel = self.query_one("#suggestions-panel", Static)
+        except Exception:
+            return
+
+        # No coaching when the agent isn't running, or when the worker
+        # decided nothing is actionable (both lists empty).
+        if (
+            not self.state.is_running
+            or (
+                not self.state.active_suggestions
+                and not self.state.active_alternatives
+            )
+        ):
+            panel.display = False
+            return
+
+        text = Text()
+        minutes_silent = int(
+            self.state.silent_tick_count * config.STRATEGY_POLL_INTERVAL / 60
+        )
+        text.append("Tuning suggestions — ", style="bold #d29922")
+        text.append(
+            f"silent {minutes_silent}m. Click a param row above to edit.\n",
+            style="dim",
+        )
+
+        for s in self.state.active_suggestions:
+            if s.config_key is None:
+                text.append("  • ", style="dim")
+                text.append(f"{s.rationale}\n", style="#8b949e italic")
+                continue
+            text.append("  • ", style="#d29922")
+            text.append(f"{s.label}", style="bold white")
+            text.append(f"  {s.current_display}", style="dim")
+            text.append(" → try ", style="dim")
+            text.append(f"{s.suggested_display}", style="bold #3fb950")
+            text.append(f"   ({s.rationale})\n", style="dim italic")
+
+        for hint in self.state.active_alternatives:
+            text.append("  ↳ ", style="#a371f7")
+            text.append(f"Alternative: {hint}\n", style="#a371f7")
+
+        panel.update(text)
+        panel.display = True
 
     # ------------------------------------------------------------------
     # Asset allowlist

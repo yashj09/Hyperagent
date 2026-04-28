@@ -38,6 +38,7 @@ from hyperagent.tui.screens.trade_journal import TradeJournalScreen
 from hyperagent.tui.screens.analytics import AnalyticsScreen
 from hyperagent.tui.screens.confirm_kill_modal import ConfirmKillModal
 from hyperagent.tui.screens.reconcile_modal import ReconcileModal
+from hyperagent.tui.tuning_advice import suggest as _suggest_params, probe_alternatives
 
 logger = logging.getLogger(__name__)
 
@@ -99,6 +100,12 @@ class HyperAgentApp(App):
         # call this slowdown window. Reset when latency recovers, so a
         # fresh slowdown produces a fresh warning.
         self._ai_slow_warned: bool = False
+        # Timestamp of the last "Silent for Nm — see Tuning suggestions"
+        # log line. We re-emit every SUGGESTIONS_REPEAT_INTERVAL_SEC while
+        # the strategy stays silent so users who missed the first line
+        # (joined late, scrolled past it) get another chance. 0 means no
+        # line has been emitted for the current stale streak.
+        self._silent_hint_last_emitted_at: float = 0.0
 
         self._prev_prices: dict = {}
 
@@ -293,6 +300,21 @@ class HyperAgentApp(App):
         except Exception:
             pass
 
+        # Strategy config screen: drives the tuning-suggestions panel,
+        # which reads state.last_tick to decide whether to show advice.
+        # Previously refresh_state() was only called on AI toggle, so the
+        # panel would never update otherwise.
+        try:
+            strategy_screen = self.query_one(StrategyConfigScreen)
+            strategy_screen.refresh_state(self.state)
+        except Exception:
+            pass
+
+        # Tab-label badge: an amber bullet on "Strategy" when there are
+        # live coaching suggestions. Dashboard users see it via peripheral
+        # vision without having to read the Tick row in detail.
+        self._update_strategy_tab_badge()
+
     # ------------------------------------------------------------------
     # Background workers
     # ------------------------------------------------------------------
@@ -466,6 +488,14 @@ class HyperAgentApp(App):
                     f"[TICK {strategy_name} {diag.elapsed_ms}ms] {diag.summary()}"
                 )
 
+                # Silent-strategy coaching. Update the state-backed surface
+                # that ALL three UI renderers read (Dashboard Tick row,
+                # Strategy tab badge, Strategy screen panel). Repeat the
+                # dashboard log line every SUGGESTIONS_REPEAT_INTERVAL_SEC
+                # instead of once-per-streak so users who missed the first
+                # line get another chance.
+                self._update_coaching_surface(signal is not None)
+
                 if signal:
                     self.state.active_signals.append(signal)
                     self.state.add_log(
@@ -505,6 +535,72 @@ class HyperAgentApp(App):
                 logger.exception("Strategy error")
 
             self._interruptible_sleep(config.STRATEGY_POLL_INTERVAL)
+
+    def _update_coaching_surface(self, signal_fired: bool) -> None:
+        """Maintain state.silent_tick_count + state.active_suggestions.
+
+        Single source of truth consumed by three UI surfaces:
+          - DashboardScreen's StrategyTickPanel (inline suggestion line)
+          - TabbedContent's Strategy tab label (amber badge)
+          - StrategyConfigScreen's SuggestionsPanel (full details)
+
+        Called once per strategy tick from run_strategy. Also emits the
+        Dashboard log hint (repeating every SUGGESTIONS_REPEAT_INTERVAL_SEC
+        while silent).
+        """
+        if signal_fired:
+            # Fresh signal — clear everything. Next streak will re-emit.
+            self.state.silent_tick_count = 0
+            self.state.active_suggestions = []
+            self.state.active_alternatives = []
+            self._silent_hint_last_emitted_at = 0.0
+            return
+
+        self.state.silent_tick_count += 1
+        tick = self.state.last_tick
+
+        if (
+            tick is None
+            or self.state.silent_tick_count < config.SUGGESTIONS_STALE_TICKS
+        ):
+            # Not silent long enough to coach yet. Keep lists empty so
+            # renderers stay quiet.
+            self.state.active_suggestions = []
+            self.state.active_alternatives = []
+            return
+
+        # Above threshold — compute suggestions from the diagnostic record.
+        self.state.active_suggestions = _suggest_params(
+            self.state.active_strategy, tick
+        )
+        # Alt-strategy hints only above the strong threshold to avoid
+        # "try X" suggestions before the user has had time to try tuning.
+        if self.state.silent_tick_count >= config.SUGGESTIONS_STALE_TICKS_STRONG:
+            self.state.active_alternatives = probe_alternatives(
+                current=self.state.active_strategy, state=self.state
+            )
+        else:
+            self.state.active_alternatives = []
+
+        # Repeat log line at cadence so users who missed it (joined late,
+        # scrolled past it) get reminded. First emission when we first
+        # cross the threshold.
+        now = time.time()
+        since_last = now - self._silent_hint_last_emitted_at
+        if (
+            self._silent_hint_last_emitted_at == 0.0
+            or since_last >= config.SUGGESTIONS_REPEAT_INTERVAL_SEC
+        ):
+            minutes = int(
+                self.state.silent_tick_count
+                * config.STRATEGY_POLL_INTERVAL
+                / 60
+            )
+            self.state.add_log(
+                f"[STRATEGY] Silent for {minutes}m — see "
+                f"'Tuning suggestions' on the Strategy tab (press s)"
+            )
+            self._silent_hint_last_emitted_at = now
 
     def _execute_signal(self, signal: Signal):
         """Execute a trade based on a signal. Called from strategy worker thread."""
@@ -1013,7 +1109,8 @@ class HyperAgentApp(App):
         time.sleep(5)  # Let price feed warm up first
 
         stats_log_counter = 0
-        auth_alerted = False  # log HYPEDEXER auth failure at most once
+        auth_alerted = False   # log HYPEDEXER auth failure at most once
+        quota_alerted = False  # log HYPEDEXER quota exhaustion at most once
         while not self._shutting_down:
             try:
                 stats = asyncio.run(
@@ -1032,6 +1129,23 @@ class HyperAgentApp(App):
                     auth_alerted = True
                 elif not self.hypedexer.auth_failed:
                     auth_alerted = False
+
+                # Same pattern for monthly-quota exhaustion. Distinct from
+                # auth_failed: the key is valid but the plan's credit budget
+                # is used up. Retrying won't help until billing resets or
+                # the user upgrades — so we tell them that, not "check your
+                # key". At 30s polls, free tier (5k credits/mo) exhausts in
+                # ~35 hours, so this path is the most likely failure mode
+                # for free-tier users running HyperAgent continuously.
+                if self.hypedexer.quota_exhausted and not quota_alerted:
+                    self.state.add_log(
+                        "[LIQ] HypeDexer monthly quota exhausted — cascade v2 "
+                        "disabled until billing resets. Upgrade your plan or "
+                        "increase HYPEDEXER_POLL_INTERVAL to stretch credits."
+                    )
+                    quota_alerted = True
+                elif not self.hypedexer.quota_exhausted:
+                    quota_alerted = False
 
                 # Log significant cascades only (to keep noise down)
                 for coin, s in stats.items():
@@ -1097,6 +1211,9 @@ class HyperAgentApp(App):
         # counts until the new strategy's first loop completes).
         self.state.last_tick = None
         self.state.last_tick_time = 0.0
+        # Reset coaching bookkeeping so any stale suggestions from the
+        # outgoing strategy don't bleed into the new one's renderers.
+        self._reset_coaching_state()
 
     def on_strategy_config_screen_strategy_toggled(
         self, event: StrategyConfigScreen.StrategyToggled
@@ -1106,6 +1223,68 @@ class HyperAgentApp(App):
             self.state.add_log("[STRATEGY] Agent started by user")
         else:
             self.state.add_log("[STRATEGY] Agent stopped by user")
+        # Both transitions reset coaching — on Start we want a fresh
+        # streak counter; on Stop we want the badge/panels to clear.
+        self._reset_coaching_state()
+
+    def _reset_coaching_state(self) -> None:
+        """Clear the stale-tick counter + suggestion surfaces.
+
+        Called on strategy switch, Start, and Stop. Keeping it in one
+        helper prevents any call site from forgetting one of the fields
+        and leaving a ghost badge or half-cleared panel.
+        """
+        self.state.silent_tick_count = 0
+        self.state.active_suggestions = []
+        self.state.active_alternatives = []
+        self._silent_hint_last_emitted_at = 0.0
+        # Also clear the tab badge immediately — a reset should feel
+        # snappy, not wait one refresh cycle.
+        try:
+            self._update_strategy_tab_badge()
+        except Exception:
+            pass
+
+    # Base label for the Strategy tab — kept as a constant so we can
+    # repeatedly toggle the badge without accumulating bullets
+    # ("Strategy • • • ...") as refresh cycles run.
+    _STRATEGY_TAB_BASE_LABEL = "Strategy"
+    _STRATEGY_TAB_BADGE_LABEL = "Strategy •"
+
+    def _update_strategy_tab_badge(self) -> None:
+        """Mutate the Strategy tab's label to show/hide an amber bullet.
+
+        Badge visible ⇔ state has active coaching (param suggestions OR
+        alternative-strategy hint). Falls back silently on any Textual
+        internal change — we don't want a UI-only feature to crash the
+        worker flow.
+        """
+        try:
+            from textual.widgets._tabs import Tab
+            tabs = self.query_one(TabbedContent)
+            tab_widget = tabs.get_tab("tab-strategy")
+            if not isinstance(tab_widget, Tab):
+                return
+
+            has_coaching = bool(
+                self.state.active_suggestions
+                or self.state.active_alternatives
+            )
+            desired = (
+                self._STRATEGY_TAB_BADGE_LABEL
+                if has_coaching
+                else self._STRATEGY_TAB_BASE_LABEL
+            )
+
+            # `label` is a reactive Content-or-str; compare by stringified
+            # form to avoid unnecessary churn (which would trigger tab
+            # re-renders each refresh).
+            if str(tab_widget.label) != desired:
+                tab_widget.label = desired
+        except Exception:
+            # Tabs widget not mounted yet, or Textual API changed — the
+            # badge is cosmetic, never fatal.
+            pass
 
     def on_strategy_config_screen_ai_toggled(
         self, event: StrategyConfigScreen.AIToggled

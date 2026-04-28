@@ -219,6 +219,24 @@ class AgentState:
     # strategy worker has stalled.
     last_tick_time: float = 0.0
 
+    # Coaching surface — populated by the strategy worker whenever the
+    # strategy has been silent past the suggestion threshold. Three UI
+    # surfaces read these: the Dashboard Tick row (inline), the tab label
+    # (badge), and the Strategy screen's panel. Keeping them on state
+    # means all three render consistently from one source of truth.
+    #
+    # Stored as raw Suggestion objects (not formatted strings) so each
+    # renderer can pick its own format (compact vs. full). Empty list =
+    # no coaching needed (strategy firing, silent < threshold, or AI off
+    # wouldn't matter — suggestions are strategy-driven).
+    active_suggestions: list = field(default_factory=list)
+    # "Try strategy X" hints, already rendered to string. Only populated
+    # after SUGGESTIONS_STALE_TICKS_STRONG ticks silent.
+    active_alternatives: List[str] = field(default_factory=list)
+    # Number of consecutive silent ticks the strategy worker has logged.
+    # Surfaces read this to show "silent Nm" countdowns.
+    silent_tick_count: int = 0
+
     # Log
     log_lines: Deque = field(default_factory=lambda: deque(maxlen=100))
 

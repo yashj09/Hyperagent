@@ -84,6 +84,13 @@ class HypeDexerClient:
         # Set to True on the first 401 so the poller (which has AgentState)
         # can surface a one-time user-visible log. Cleared on first 2xx.
         self.auth_failed: bool = False
+        # Set to True when the HypeDexer response indicates the monthly
+        # credit quota is exhausted (distinct from 429 transient rate limits:
+        # quota-exhausted means retrying won't help until the next billing
+        # cycle). Surfaced once by the poller the same way auth_failed is.
+        # A future successful 200 clears it (e.g. after the user upgrades
+        # their plan or the billing cycle resets).
+        self.quota_exhausted: bool = False
 
         if not self.api_key:
             logger.warning(
@@ -109,7 +116,10 @@ class HypeDexerClient:
                     response = await client.get(url, headers=self._headers(), params=params)
 
                 if response.status_code == 200:
+                    # Any successful call clears the sticky failure flags —
+                    # user likely upgraded the plan or billing cycle reset.
                     self.auth_failed = False
+                    self.quota_exhausted = False
                     return response.json()
 
                 if response.status_code == 429:
@@ -128,6 +138,26 @@ class HypeDexerClient:
                     )
                     self.auth_failed = True
                     return None
+
+                # Quota exhaustion: HypeDexer returns 402 or 403 with a body
+                # mentioning the plan / credit / quota limit. Distinct from
+                # 429 because retrying won't help — user needs to upgrade or
+                # wait for the next billing cycle. We also park the backoff
+                # for an hour so we don't hammer the endpoint while quota is
+                # out; a successful 200 clears it instantly.
+                if response.status_code in (402, 403):
+                    body = (response.text or "").lower()
+                    if any(
+                        token in body
+                        for token in ("quota", "credit", "plan", "exhaust", "limit reached")
+                    ):
+                        self.quota_exhausted = True
+                        self._backoff_until = time.time() + 3600
+                        logger.error(
+                            "HypeDexer quota exhausted (%d): %s",
+                            response.status_code, body[:120],
+                        )
+                        return None
 
                 # Other 4xx/5xx — log and retry once
                 logger.debug(
