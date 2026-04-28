@@ -128,7 +128,9 @@ class TickDiagnostics:
         """One-line text summary for the log. Compact on purpose."""
         ai_suffix = f" (AI +{self.ai_latency_ms}ms)" if self.ai_latency_ms else ""
         if self.blocker:
-            return f"blocked: {self.blocker}"
+            # [waiting] prefix makes it clear to users this isn't an error —
+            # the strategy is intentionally idle until the named condition.
+            return f"[waiting] {self.blocker}"
         if self.signal_fired:
             return (
                 f"SIGNAL {self.signal_direction} {self.signal_coin} "
@@ -164,7 +166,7 @@ class AgentState:
     open_interest: Dict[str, float] = field(default_factory=dict)
 
     # Strategy
-    active_strategy: str = "trend_follower"
+    active_strategy: str = "momentum"
     ai_enabled: bool = False
     active_signals: list = field(default_factory=list)
 

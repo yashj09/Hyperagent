@@ -310,6 +310,10 @@ RISK_SPECS: List[ParamSpec] = [
     ParamSpec("MAX_NET_DIRECTIONAL_POSITIONS", "Max Net Directional", "int", min=1, max=10),
     ParamSpec("TRADE_COOLDOWN_DEFAULT", "Trade Cooldown", "seconds", min=0, max=3600),
     ParamSpec("NATIVE_STOP_WIDEN_MULT", "Native Stop Widen", "ratio", min=1.0, max=3.0),
+    ParamSpec("STRATEGY_SCORE_MIN", "Scout Score Floor", "int", min=20, max=80,
+              help="Lowest composite score at which any strategy emits a signal. "
+                   "Sub-55 signals still route through risk sizing (conv_scalar=score/75) "
+                   "so they auto-shrink; MIN_POSITION_SIZE_USD is the hard floor."),
 ]
 
 

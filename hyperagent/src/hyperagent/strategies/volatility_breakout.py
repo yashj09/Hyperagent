@@ -147,7 +147,7 @@ class VolatilityBreakoutStrategy(BaseStrategy):
                     coin, score, f"{direction} breakout score={score:.0f}"
                 )
 
-            if score < 55:
+            if score < config.STRATEGY_SCORE_MIN:
                 if diag:
                     diag.reject("score_below_min")
                 continue

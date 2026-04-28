@@ -427,7 +427,28 @@ class RiskManager:
         final_usd = min(config.MAX_POSITION_SIZE_USD, final_usd)
 
         raw_size = final_usd / price
-        return self.client.format_size(raw_size, coin)
+        sz = self.client.format_size(raw_size, coin)
+
+        # HL rejects orders below ~$10 notional with "invalid size". After
+        # format_size rounding, a coarse-decimal coin (DOGE/XRP: 1 decimal)
+        # can round down to 0 or leave a sub-$10 notional. Bump up to the
+        # nearest-representable size that crosses a $12 notional floor so
+        # HL accepts. If even that can't clear the bar, skip the trade.
+        hl_min_notional = 12.0
+        if sz * price < hl_min_notional:
+            bumped_raw = hl_min_notional / price
+            sz = self.client.format_size(bumped_raw, coin)
+            # format_size may still round DOWN if the coin has coarse
+            # decimals; nudge up by one lot if needed.
+            if sz * price < hl_min_notional:
+                # Compute one-lot increment for this coin via a probe
+                one_lot = self.client.format_size(bumped_raw * 1.5, coin) - sz
+                if one_lot > 0:
+                    sz = self.client.format_size(sz + one_lot, coin)
+            if sz * price < hl_min_notional:
+                return 0.0
+
+        return sz
 
     def check_correlation_guard(self, coin: str, direction: str) -> bool:
         for group in config.CORRELATED_GROUPS:

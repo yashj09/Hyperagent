@@ -137,23 +137,27 @@ class MomentumStrategy(BaseStrategy):
                     diag.reject("score_below_threshold")
                 continue
 
-            # Multi-timeframe gate: HTF must agree with direction. This is a strict
-            # gate (not just scoring bonus) — research shows MTF confirmation alone
-            # lifts Sharpe by 0.2-0.4 on crypto hourly momentum.
-            if direction == "LONG" and htf_bull == 0:
-                if diag:
-                    diag.reject("htf_disagree")
-                continue
-            if direction == "SHORT" and htf_bear == 0:
-                if diag:
-                    diag.reject("htf_disagree")
-                continue
+            # HTF confirmation is now a scoring bonus (baked into total_bull/bear
+            # via htf_bull/htf_bear +15), not a hard gate. Previously this was
+            # a hard reject — but a 1h score of 85 being killed by a neutral 4h
+            # EMA is too brittle on crypto where 4h can lag 1h by 2-3 bars
+            # during fresh moves. We downgrade HIGH→MEDIUM confidence instead
+            # so sizing (via conv_scalar = score/75) auto-shrinks unconfirmed
+            # trades.
+            htf_aligned = (direction == "LONG" and htf_bull > 0) or (
+                direction == "SHORT" and htf_bear > 0
+            )
 
             if score <= best_score:
                 continue
 
             best_score = score
-            confidence = "HIGH" if score >= 75 else "MEDIUM"
+            # HIGH conviction requires HTF alignment; unconfirmed signals cap
+            # at MEDIUM so risk.calculate_position_size shrinks them.
+            if score >= 75 and htf_aligned:
+                confidence = "HIGH"
+            else:
+                confidence = "MEDIUM"
 
             best_signal = Signal(
                 coin=coin,

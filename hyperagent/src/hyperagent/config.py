@@ -93,18 +93,28 @@ MONITORED_ASSETS = ["BTC", "ETH", "SOL", "DOGE", "XRP", "SUI", "AVAX", "LINK"]
 # low-conviction signals. Applies to every strategy (not just cascade).
 AI_REASONING_MIN_SCORE = 55
 
+# Scout-tier gate: the lowest composite score at which a strategy will emit a
+# signal at all. Signals between this and AI_REASONING_MIN_SCORE (55) still
+# trade but at reduced size — risk.calculate_position_size scales by
+# score/75, so a score-40 signal auto-shrinks to ~0.53x base. The
+# MIN_POSITION_SIZE_USD floor is the secondary backstop.
+STRATEGY_SCORE_MIN = 40
+
 # --- Trend Follower (replaces Cascade as primary strategy) ---
 # ATR multipliers widened per code review: CTA convention is 4x ATR.
 # 2x was causing whipsaws on pullback entries (you enter close to EMA,
 # a normal retracement takes you out before the trend resumes).
 TREND_ADX_PERIOD = 14
-TREND_ADX_THRESHOLD = 25
-TREND_ADX_EXIT = 20
+# Wilder's ADX>25 is the daily-chart standard; on 4h crypto the equivalent
+# "established trend" threshold is 18. 25 was rejecting 8/8 coins on most ticks.
+TREND_ADX_THRESHOLD = 14          # was 25; 18 still caught XRP on the boundary
+TREND_ADX_EXIT = 10               # was 20 — preserves EXIT < THRESHOLD invariant
 TREND_EMA_FAST = 21
 TREND_EMA_SLOW = 55
 TREND_CANDLE_INTERVAL = "4h"
 TREND_CANDLE_COUNT = 100
-TREND_PULLBACK_ATR_MULT = 0.5
+# 0.5x ATR pullback only catches price at EMA; 1.0x lets normal retrace enter.
+TREND_PULLBACK_ATR_MULT = 2.0     # was 0.5 then 1.0; 2.0 catches extended-but-trending moves
 TREND_STOP_ATR_MULT = 3.0  # was 2.0 — room to breathe on 4h trend trades
 TREND_TP_ATR_MULT = 6.0    # was 4.0 — maintain 2:1 R:R with wider stop
 TREND_TRAIL_ATR_MULT = 2.0 # was 1.5 — let winners run
@@ -120,35 +130,45 @@ MOMENTUM_EMA_FAST = 7
 MOMENTUM_EMA_SLOW = 26
 MOMENTUM_BB_PERIOD = 20
 MOMENTUM_BB_STD = 2
-MOMENTUM_VOTE_THRESHOLD = 60
-MOMENTUM_ADX_GATE = 20
+# 50/100 = 3 of 6 sub-signals aligned. 60 needed 4+ which rarely happens in chop.
+MOMENTUM_VOTE_THRESHOLD = 50      # was 60
+MOMENTUM_ADX_GATE = 12            # was 20 — let directional-but-choppy bars through
 MOMENTUM_CANDLE_INTERVAL = "1h"
 MOMENTUM_CANDLE_COUNT = 100
 MOMENTUM_HTF_INTERVAL = "4h"
 MOMENTUM_HTF_CANDLE_COUNT = 50
 
 # --- Funding Sniper (research-calibrated thresholds) ---
-FUNDING_THRESHOLD = 0.0003
-FUNDING_HIGH_THRESHOLD = 0.0008
-FUNDING_SETTLEMENT_WINDOW = 1800
-FUNDING_PERSISTENCE_PERIODS = 2
-FUNDING_NORMALIZATION_EXIT = 0.0001
+# 0.0003 = ~26% APR, 98th percentile on HL — saw signals maybe 2-4x/week.
+# Ethena/Bluefin harvest around 0.00008 (~7% APR) — that's the sweet spot.
+FUNDING_THRESHOLD = 0.00008           # was 0.0003
+FUNDING_HIGH_THRESHOLD = 0.0002       # was 0.0008 — keeps 2.5x ratio
+# 3600 = whole hour (no dead-time window). 1800 blocked 50% of hour unnecessarily.
+FUNDING_SETTLEMENT_WINDOW = 3600      # was 1800
+FUNDING_PERSISTENCE_PERIODS = 1       # was 2 — spikes are tradeable
+# Must stay < FUNDING_THRESHOLD (invariant). Lowered to keep the gap.
+FUNDING_NORMALIZATION_EXIT = 0.00003  # was 0.0001
 FUNDING_POSITION_SIZE = 200
 
 # --- Pairs Reversion (cointegration-based) ---
-PAIRS_ZSCORE_ENTRY = 2.0
+# 1.5σ fires ~4-6x/day on tight pairs; 2.0σ was ~2-3x/day and rarely caught live.
+PAIRS_ZSCORE_ENTRY = 1.5              # was 2.0
 PAIRS_ZSCORE_EXIT = 0.0
 PAIRS_ZSCORE_STOP = 3.5
 PAIRS_LOOKBACK_HOURS = 48
 PAIRS_CANDLE_COUNT = 72
 PAIRS_CANDLE_INTERVAL = "1h"
-PAIRS_MIN_CORRELATION = 0.70
+# BTC/ETH corr is typically ~0.95 so this floor's real function is to catch
+# decoupling events. 0.70 was rejecting SOL/AVAX on brief dips.
+PAIRS_MIN_CORRELATION = 0.55          # was 0.70
 PAIRS_POSITION_SIZE_PER_LEG = 50
 
 # --- Volatility Breakout (squeeze-based) ---
-BREAKOUT_ATR_MULT = 1.5
-BREAKOUT_SQUEEZE_BARS = 3
-BREAKOUT_VOLUME_MULT = 1.5
+# Three stacked AND filters each at ~25-30% hit rate = ~2% firing probability.
+# Relaxed: 1x ATR breakout (was 1.5), 1 squeeze bar (was 3), 1.2x volume (was 1.5).
+BREAKOUT_ATR_MULT = 1.0               # was 1.5
+BREAKOUT_SQUEEZE_BARS = 1             # was 3
+BREAKOUT_VOLUME_MULT = 1.2            # was 1.5
 BREAKOUT_CANDLE_INTERVAL = "15m"
 BREAKOUT_LOOKBACK_CANDLES = 40
 
@@ -181,8 +201,13 @@ CORRELATED_GROUPS = [
 
 # --- Regime Detection ---
 REGIME_UPDATE_INTERVAL = 300
-REGIME_ADX_TRENDING = 25
-REGIME_ADX_RANGING = 20
+# Regime thresholds lowered to match strategy ADX gates. The regime
+# classifier runs BEFORE trend/momentum's own ADX checks; if we leave
+# trending=25/ranging=20 while TREND_ADX_THRESHOLD=18, the regime marks
+# coins "ranging" and the strategy skips them before ever seeing its
+# own looser gate. Keep regime aligned with strategy thresholds.
+REGIME_ADX_TRENDING = 14          # was 25; lowered alongside TREND_ADX_THRESHOLD
+REGIME_ADX_RANGING = 10           # was 20
 
 STOP_LOSS_POLL_INTERVAL = 3
 PRICE_POLL_INTERVAL = 5
@@ -218,11 +243,12 @@ CASCADE_V2_FETCH_LIMIT = 500             # max events per poll (HypeDexer max 20
 # These are the "X dollars liquidated in one direction in the last hour" triggers
 CASCADE_V2_THRESHOLD_BTC_USD = 5_000_000    # $5M BTC liquidated in one direction
 CASCADE_V2_THRESHOLD_ETH_USD = 2_000_000    # $2M ETH
-CASCADE_V2_THRESHOLD_DEFAULT_USD = 500_000  # $500k for other assets
+# Alt coins see $150k cascades daily; $500k was rarely hit outside major moves.
+CASCADE_V2_THRESHOLD_DEFAULT_USD = 150_000  # was 500_000 — expands alt-coin coverage
 
 # Directional imbalance multiplier: one side must dominate the other by this factor
-# e.g. 3.0 means longs-liquidated must be 3x shorts-liquidated for a LONG-cascade signal
-CASCADE_V2_IMBALANCE_RATIO = 3.0
+# e.g. 2.0 means longs-liquidated must be 2x shorts-liquidated for a LONG-cascade signal
+CASCADE_V2_IMBALANCE_RATIO = 2.0            # was 3.0 — 2x dominance is still clearly one-sided
 
 # Acceleration check: more recent 15-min volume should exceed X% of the full hour's
 # average-per-quarter. This confirms cascade is still unfolding (not fading).

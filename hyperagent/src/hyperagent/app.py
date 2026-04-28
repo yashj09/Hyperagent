@@ -683,7 +683,12 @@ class HyperAgentApp(App):
                     self._execute_hedge_leg(signal)
 
             elif result.error_message:
-                self.state.add_log(f"[TRADE] Failed: {result.error_message}")
+                # Include computed size/notional so "invalid size" rejections
+                # from HL are actionable instead of opaque.
+                self.state.add_log(
+                    f"[TRADE] Failed: {result.error_message} "
+                    f"(coin={coin} size={size} notional=${size * price:.2f})"
+                )
         except Exception as exc:
             self.state.add_log(f"[TRADE] Execution error: {exc}")
             logger.exception("Trade execution error")

@@ -134,8 +134,19 @@ class TrendFollowerStrategy(BaseStrategy):
                     diag.reject("funding_against")
                 continue
 
-            adx_score = min(40, (adx_val - 25) / 50 * 40)
-            di_score = min(30, abs(plus_di - minus_di) / 30 * 30)
+            # Score components sum to 100. Earlier formula assumed ADX>=25
+            # and gave 0-40 pts only above that floor; with threshold now 14,
+            # legitimate trends at ADX=14-20 scored almost nothing. Rebased
+            # so crossing the threshold earns a reasonable baseline (10 pts)
+            # and ADX=40+ maxes out at 40.
+            adx_val_clamped = max(config.TREND_ADX_THRESHOLD, min(adx_val, 50))
+            adx_score = 10 + (adx_val_clamped - config.TREND_ADX_THRESHOLD) / (
+                50 - config.TREND_ADX_THRESHOLD
+            ) * 30
+            # DI diff scales linearly — typical crypto diffs are 5-20, not 30+.
+            # Old /30 cap meant you needed a 30-point spread for full credit
+            # which rarely happens. /15 so a 15-pt diff earns full 30 pts.
+            di_score = min(30, abs(plus_di - minus_di) / 15 * 30)
             ema_score = 15.0
             pullback_score = 15.0 * (1 - pullback_dist / max_pullback) if max_pullback > 0 else 0
 
@@ -146,7 +157,7 @@ class TrendFollowerStrategy(BaseStrategy):
                     coin, score, f"{direction} ADX={adx_val:.0f} score={score:.0f}"
                 )
 
-            if score < 55:
+            if score < config.STRATEGY_SCORE_MIN:
                 if diag:
                     diag.reject("score_below_min")
                 continue

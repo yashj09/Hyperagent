@@ -186,18 +186,22 @@ class HyperLiquidClient:
         # Default for altcoins
         return round(price, 3)
 
-    @staticmethod
-    def format_size(size: float, coin: str = "BTC") -> float:
+    # szDecimals per HL meta (verified against mainnet universe). DOGE/XRP
+    # require WHOLE numbers; SUI/LINK require 1 decimal; prior code rounded
+    # DOGE/XRP to 1dp and SUI/LINK to 2dp which produced "invalid size"
+    # rejections from HL.
+    _SZ_DECIMALS = {
+        "BTC": 5, "ETH": 4,
+        "SOL": 2, "AVAX": 2,
+        "SUI": 1, "LINK": 1,
+        "DOGE": 0, "XRP": 0,
+    }
+
+    @classmethod
+    def format_size(cls, size: float, coin: str = "BTC") -> float:
         """Round a size to an acceptable lot increment for *coin*."""
-        if coin == "BTC":
-            return round(size, 5)   # e.g. 0.00100
-        if coin == "ETH":
-            return round(size, 4)
-        if coin in ("SOL", "AVAX", "LINK", "SUI"):
-            return round(size, 2)
-        if coin in ("DOGE", "XRP"):
-            return round(size, 1)
-        return round(size, 2)
+        decimals = cls._SZ_DECIMALS.get(coin, 2)
+        return round(size, decimals)
 
     # ------------------------------------------------------------------
     # Market data (read via mainnet Info)

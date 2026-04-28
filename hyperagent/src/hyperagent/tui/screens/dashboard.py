@@ -168,7 +168,11 @@ class StrategyTickPanel(Static):
                 style="bold #3fb950",
             )
         elif tick.blocker:
-            output.append(f"blocked: {tick.blocker}", style="#d29922")
+            # Bold amber badge for in-flight waits (bar-close gate, funding
+            # settlement window). User should read this as "strategy is
+            # working correctly, just paused for a known reason" — not an
+            # error. The ETA text inside tick.blocker tells them how long.
+            output.append(f"WAITING: {tick.blocker}", style="bold #d29922")
         else:
             # Compact no-signal readout. Show "closest miss" when available
             # so users see progress instead of a blank "no signal".

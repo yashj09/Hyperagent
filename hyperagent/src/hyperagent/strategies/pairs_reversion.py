@@ -121,7 +121,7 @@ class PairsReversionStrategy(BaseStrategy):
                 funding_pts += 5
 
             score = z_score_pts + corr_pts + funding_pts
-            if score < 55:
+            if score < config.STRATEGY_SCORE_MIN:
                 if diag:
                     diag.reject("score_below_min")
                 continue
